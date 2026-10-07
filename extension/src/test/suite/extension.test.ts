@@ -15,6 +15,10 @@ interface Api {
   whenWatching: () => Promise<void>;
   refreshGit: () => Promise<void>;
   prompts: () => { message: string; action: string }[];
+  notices: () => string[];
+  statusMessages: () => string[];
+  skips: () => string[];
+  pendingText: () => string;
   entries: () => { folder: string; name: string; note: string; before: string; after: string }[];
   lastHtml: () => string;
   standaloneHtml: () => string;
@@ -38,15 +42,20 @@ function git(args: string[]) {
   execFileSync("git", args, { cwd: root() });
 }
 
-async function waitFor(read: () => boolean, label: string): Promise<void> {
+async function waitFor(read: () => boolean, label: string, timeoutMs = 20000): Promise<void> {
   const start = Date.now();
-  while (Date.now() - start < 20000) {
+  while (Date.now() - start < timeoutMs) {
     if (read()) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw new Error(`timed out waiting for ${label}`);
+}
+
+function inside(child: string, parent: string): boolean {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
 async function pngHasColor(file: string, red: number, green: number, blue: number): Promise<boolean> {
@@ -60,6 +69,39 @@ async function pngHasColor(file: string, red: number, green: number, blue: numbe
 }
 
 suite("decap extension", () => {
+  if (process.env.DECAP_LAYOUT === "nested") {
+    test("a repository one folder down is captured and Fill in why opens it", async function () {
+      this.timeout(45000);
+      const exported = await api();
+      await exported.whenWatching();
+      const inner = process.env.DECAP_INNER;
+      assert.ok(inner, "DECAP_INNER is set for the nested fixture");
+      const outer = root();
+      assert.strictEqual(inside(inner, outer), true);
+      assert.notStrictEqual(path.resolve(inner), path.resolve(outer));
+      execFileSync("git", ["add", "-A"], { cwd: inner });
+      execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "use sum"], { cwd: inner });
+      await waitFor(
+        () => exported.entries().some((entry) => entry.note.includes(`change: ${APP_KEY}`)),
+        "a nested capture",
+        30000,
+      );
+      const entry = exported.entries().find((item) => item.note.includes(`change: ${APP_KEY}`));
+      assert.ok(entry);
+      assert.strictEqual(inside(entry.folder, path.join(inner, ".decisions")), true);
+      assert.strictEqual(fs.existsSync(path.join(outer, ".decisions")), false);
+      assert.ok(exported.prompts().some((item) => item.message === `decap saved ${entry.name}`));
+      exported.fillWhy(entry.folder);
+      const html = exported.lastHtml();
+      assert.ok(html.includes('alt="before"'), html);
+      assert.ok(html.includes('alt="after"'), html);
+      assert.ok(html.includes("src/app.py"), html);
+      assert.ok(html.includes("autofocus"), html);
+      assert.ok(exported.pendingText().includes("decap: fill in why"), exported.pendingText());
+    });
+    return;
+  }
+
   test("the change hash matches the command line tool", () => {
     const app: TextHunk = {
       path: "src/app.py",
@@ -93,6 +135,8 @@ suite("decap extension", () => {
     const commands = await vscode.commands.getCommands(true);
     assert.ok(commands.includes("decap.snap"));
     assert.ok(commands.includes("decap.openDecisions"));
+    assert.ok(commands.includes("decap.showLog"));
+    assert.ok(commands.includes("decap.fillWhy"));
     assert.strictEqual(commands.includes("decap.setup"), false);
     assert.strictEqual(commands.includes("decap.installHook"), false);
     const html = exported.standaloneHtml();
@@ -128,6 +172,7 @@ suite("decap extension", () => {
     assert.ok(html.includes('alt="before"'), html);
     assert.ok(html.includes('alt="after"'), html);
     assert.ok(html.includes("autofocus"), html);
+    assert.ok(exported.pendingText().includes("decap: fill in why"), exported.pendingText());
     const out = process.env.DECAP_E2E_OUT;
     if (out) {
       fs.mkdirSync(out, { recursive: true });
@@ -136,15 +181,53 @@ suite("decap extension", () => {
     }
   });
 
-  test("a fresh line commit writes nothing", async () => {
+  test("a terminal commit is captured by the HEAD watcher", async function () {
+    this.timeout(45000);
+    const exported = await api();
+    await exported.whenWatching();
+    const before = exported.prompts().length;
+    fs.writeFileSync(path.join(root(), "src", "watch.py"), "def watch():\n    return 1\n");
+    git(["add", "src/watch.py"]);
+    git(["-c", "commit.gpgsign=false", "commit", "-m", "watch"]);
+    await waitFor(() => exported.prompts().length > before, "a watcher capture", 30000);
+    const entry = exported.entries().find((item) => item.note.includes("file: src/watch.py"));
+    assert.ok(entry);
+    assert.ok(exported.prompts().some((item) => item.message === `decap saved ${entry.name}` && item.action === "Fill in why"));
+  });
+
+  test("a fresh line commit writes nothing and explains why", async function () {
+    this.timeout(30000);
     const exported = await api();
     const before = exported.entries().length;
     fs.writeFileSync(path.join(root(), "src", "app.py"), "def total(xs):\n    return sum(xs) + 1\n");
-    git(["add", "-A"]);
+    git(["add", "src/app.py"]);
     git(["-c", "commit.gpgsign=false", "commit", "-m", "young"]);
     await exported.refreshGit();
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await waitFor(() => exported.skips().includes("young"), "the young skip");
     assert.strictEqual(exported.entries().length, before);
+    const status = exported.statusMessages().find((item) => item.includes("younger than 12 hours"));
+    assert.ok(status, exported.statusMessages().join("\n"));
+    assert.ok(status.startsWith("decap: nothing captured, "));
+    const notice = exported.notices().find((item) => item.includes("git config decap.minAge 0"));
+    assert.ok(notice, exported.notices().join("\n"));
+    assert.ok(notice.includes("at least 12 hours old"));
+    assert.strictEqual(exported.notices().length, 1);
+  });
+
+  test("a commit that only adds lines is skipped as added-only", async () => {
+    const exported = await api();
+    const before = exported.entries().length;
+    const notices = exported.notices().length;
+    fs.writeFileSync(path.join(root(), "src", "extra.py"), "def extra():\n    return 0\n    return 1\n");
+    git(["add", "src/extra.py"]);
+    git(["-c", "commit.gpgsign=false", "commit", "-m", "add a line"]);
+    await exported.refreshGit();
+    await waitFor(() => exported.skips().includes("added-only"), "the added-only skip");
+    assert.strictEqual(exported.entries().length, before);
+    const status = exported.statusMessages().find((item) => item.includes("only added new lines"));
+    assert.ok(status, exported.statusMessages().join("\n"));
+    assert.ok(status.startsWith("decap: nothing captured, "));
+    assert.strictEqual(exported.notices().length, notices);
   });
 
   test("snap captures the working tree", async () => {
