@@ -1,0 +1,20 @@
+[project]
+name = "decap"
+version = "0.1.0"
+description = "Capture before/after images of code decisions"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["Pygments", "Pillow"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+decap = "decap:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["decap"]
