@@ -56,6 +56,7 @@ export function renderPage(
   entry: Entry | undefined,
   entries: Entry[],
   src: (file: string) => string,
+  focusWhy = false,
 ): string {
   const items = entries.map((item) => {
     const selected = entry && item.folder === entry.folder ? " selected" : "";
@@ -69,8 +70,8 @@ export function renderPage(
       </div>
       <pre class="front">${escapeText(parts.front)}</pre>
       <label for="why">Why</label>
-      <textarea id="why">${escapeText(parts.why)}</textarea>`
-    : `<p class="empty">No decisions yet. Run decap: Snap, or commit a change to a line that is at least 12 hours old.</p>`;
+      <textarea id="why"${focusWhy ? " autofocus" : ""}>${escapeText(parts.why)}</textarea>`
+    : `<p class="empty">No decisions yet. A capture appears after you commit a change to a line that is at least 12 hours old.</p>`;
   const folder = entry ? entry.folder : "";
   return `<!DOCTYPE html>
 <html>
@@ -103,6 +104,9 @@ export function renderPage(
     const why = document.getElementById("why");
     if (why && vscodeApi) {
       why.addEventListener("change", () => vscodeApi.postMessage({ type: "why", folder: ${JSON.stringify(folder)}, text: why.value }));
+    }
+    if (why && ${focusWhy ? "true" : "false"}) {
+      why.focus();
     }
   </script>
 </body>

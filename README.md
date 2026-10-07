@@ -55,20 +55,20 @@ npm install
 npx @vscode/vsce package
 ```
 
-That writes `decap-0.1.0.vsix`. The CI artifact is the same file.
+That writes `decap-0.1.1.vsix`. The CI artifact is the same file.
 
-In VS Code, open Extensions and choose Install from VSIX. From a terminal, run `code --install-extension decap-0.1.0.vsix`.
+In VS Code, open Extensions and choose Install from VSIX. From a terminal, run `code --install-extension decap-0.1.1.vsix`.
 
-In Cursor, use the same Install from VSIX action, or run `cursor --install-extension decap-0.1.0.vsix`.
+In Cursor, use the same Install from VSIX action, or run `cursor --install-extension decap-0.1.1.vsix`.
 
-Open a git repository. If the decap command is missing, the extension offers to install it. The prompt names the pipx or pip command before anything runs, then shows progress. Errors stay in plain words. If pipx and pip are both missing, the prompt says so. If the hook is missing, the extension offers to run `decap install`.
+Open a git repository. Installing the extension is the whole setup. The editor does not need Python and does not install a hook. A commit that changes a line at least 12 hours old is captured while the window is open. Commits made while the editor is closed are not captured. `pipx install .` from a checkout still installs the command-line tool for terminal-only use.
 
-`decap: Snap` captures the working tree. The default key is Alt+Shift+S. `decap: Install hook` writes the hook. `decap: Open decisions` focuses the sidebar.
+`decap: Snap` captures the working tree. The default key is Alt+Shift+S. `decap: Open decisions` focuses the sidebar.
 
-The sidebar lists `.decisions` folders, newest first. Each entry shows the before image and the after image side by side, plus the note. Edit the Why box and leave the field to save `note.md`.
+The sidebar lists `.decisions` folders, newest first. Before the first capture it says that a capture appears after you commit a change to an old line. Each entry shows the before image and the after image side by side, plus the note. Edit the Why box and leave the field to save `note.md`.
 
-A new capture shows a notification in the editor.
+A new capture shows a notification with Fill in why. That opens the new note and focuses the Why box. If the command-line hook is also installed, the shared change hash keeps the editor from writing a second copy of the same capture.
 
-To publish on Open VSX, download the CI vsix and run `npx ovsx publish decap-0.1.0.vsix` with your own token. The Marketplace is a separate publisher account and `vsce publish`. This repository has no publish workflow and no publish token.
+To publish on Open VSX, download the CI vsix and run `npx ovsx publish decap-0.1.1.vsix` with your own token. The Marketplace is a separate publisher account and `vsce publish`. This repository has no publish workflow and no publish token.
 
 The plan is in [PLAN.md](PLAN.md).

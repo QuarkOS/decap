@@ -4,22 +4,24 @@ decap saves a before image and an after image when a commit changes a line that 
 
 ## Requirements
 
-Python 3.11 or newer, and git. On Windows, install Git for Windows and Python with pipx or pip. On Linux, the same Python and git setup applies. The editor shells out to the `decap` command for every capture.
+Git. The extension does not need Python. On Windows, install Git for Windows. Commits made while the editor is closed are not captured.
+
+The command-line tool in this repository is separate. It needs Python 3.11 or newer and a post-commit hook. Use it when you want captures from a terminal with no editor open.
 
 ## First run
 
-Open a git repository. If `decap` is missing, the extension offers to install it. The prompt shows the pipx or pip command before it runs, then shows progress. Errors stay in plain words. If the post-commit hook is missing, the extension offers to install that next. An existing hook is left in place and the decap block is appended.
+Install the extension and open a git repository. There is no setup step. The next commit that changes a line at least 12 hours old is saved under `.decisions`.
 
 ## Commands
 
-`decap: Snap` captures the working tree against HEAD. The default key is Alt+Shift+S.
-
-`decap: Install hook` writes the post-commit hook.
+`decap: Snap` captures the working tree against HEAD, including lines younger than 12 hours. The default key is Alt+Shift+S.
 
 `decap: Open decisions` opens the sidebar.
 
 ## Sidebar
 
-The Decisions view lists `.decisions` folders, newest first. Select one to see the before image and the after image side by side, with the note under them. Edit the Why box and leave the field to save `note.md`.
+The Decisions view lists `.decisions` folders, newest first. Before any capture it explains that a capture appears after you commit a change to an old line. Select one to see the before image and the after image side by side, with the note under them. Edit the Why box and leave the field to save `note.md`.
 
-A new capture shows a notification in the editor.
+A new capture shows a notification with Fill in why. That opens the sidebar on the new note and focuses the Why box.
+
+Images use DejaVu Sans Mono, which is bundled with the extension. DejaVu is based on Bitstream Vera. The font license is `media/DejaVu-LICENSE.txt`.

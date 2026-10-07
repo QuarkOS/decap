@@ -1,51 +1,98 @@
-import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { promisify } from "util";
 import * as vscode from "vscode";
-import { explainHook, explainInstall, hookInstalled, installTarget, offer, Tools } from "./setup";
+import { capture, commitIsFresh } from "./capture";
+import { watchCommits } from "./git";
 import { joinWhy, listDecisions, renderPage, splitWhy } from "./view";
 
-const exec = promisify(execFile);
+export function capturePrompt(name: string): { message: string; action: string } {
+  return { message: `decap saved ${name}`, action: "Fill in why" };
+}
 
 export async function activate(context: vscode.ExtensionContext) {
-  const prompts: string[] = [];
+  const prompts: { message: string; action: string }[] = [];
+  const fontFile = path.join(context.extensionPath, "media", "DejaVuSansMono.ttf");
   const view = new DecisionView(() => workspaceRoot());
+  const announced = new Set<string>();
+  const initial = workspaceRoot();
+  if (initial) {
+    for (const entry of listDecisions(initial)) {
+      announced.add(entry.folder);
+    }
+  }
+
+  function announce(root: string) {
+    const showHere = samePath(root, workspaceRoot());
+    for (const entry of listDecisions(root)) {
+      if (announced.has(entry.folder)) {
+        continue;
+      }
+      announced.add(entry.folder);
+      const folder = entry.folder;
+      const prompt = capturePrompt(entry.name);
+      prompts.push(prompt);
+      if (showHere) {
+        view.refresh();
+      }
+      if (process.env.DECAP_TEST === "1") {
+        continue;
+      }
+      void vscode.window.showInformationMessage(prompt.message, prompt.action).then((choice) => {
+        if (choice === prompt.action) {
+          fillWhy(folder);
+        }
+      });
+    }
+  }
+
+  async function onCommit(root: string) {
+    if (!commitIsFresh(root)) {
+      return;
+    }
+    await capture({ start: root, source: "commit", fontFile });
+    announce(root);
+  }
+
+  const watching = watchCommits(context, onCommit);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("decap.decisions", view),
-  );
-  context.subscriptions.push(
-    vscode.commands.registerCommand("decap.snap", () => snap(view)),
-    vscode.commands.registerCommand("decap.installHook", () => installHook(workspaceRoot())),
-    vscode.commands.registerCommand("decap.installCli", () => installCli(context.extensionPath)),
+    vscode.commands.registerCommand("decap.snap", () => snap()),
     vscode.commands.registerCommand("decap.openDecisions", async () => {
       await vscode.commands.executeCommand("decap.decisions.focus");
       view.refresh();
     }),
   );
-  const watcher = vscode.workspace.createFileSystemWatcher("**/.decisions/**/note.md");
-  watcher.onDidCreate((uri) => {
-    view.refresh();
-    const name = path.basename(path.dirname(uri.fsPath));
-    void vscode.window.showInformationMessage(`decap saved ${name}`, "Open").then((choice) => {
-      if (choice === "Open") {
-        view.select(path.dirname(uri.fsPath));
-        void vscode.commands.executeCommand("decap.openDecisions");
-      }
-    });
-  });
-  context.subscriptions.push(watcher);
-  if (process.env.DECAP_TEST !== "1") {
-    void offerSetup(context.extensionPath);
+
+  function fillWhy(folder: string) {
+    view.fillWhy(folder);
+    void vscode.commands.executeCommand("decap.decisions.focus");
   }
+
+  async function snap() {
+    const root = workspaceRoot();
+    if (!root) {
+      void vscode.window.showWarningMessage("Open a folder before running decap: Snap.");
+      return;
+    }
+    try {
+      await capture({ start: root, source: "worktree", fontFile });
+    } catch (err) {
+      const message = err instanceof Error ? err.message.trim() : "";
+      void vscode.window.showErrorMessage(message ? `decap snap failed. ${message}` : "decap snap failed.");
+      return;
+    }
+    announce(root);
+  }
+
   return {
-    prompts,
-    explainInstall,
-    explainHook,
-    offer,
+    capturePrompt,
+    whenWatching: () => watching.whenReady,
+    refreshGit: () => watching.refresh(),
+    prompts: () => prompts,
     entries: () => view.entries(),
     lastHtml: () => view.lastHtml,
     standaloneHtml: () => view.standaloneHtml(),
+    fillWhy,
     refresh: () => view.refresh(),
   };
 }
@@ -58,112 +105,20 @@ function workspaceRoot(): string | undefined {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 }
 
-async function detectTools(): Promise<Tools> {
-  return {
-    decap: await onPath("decap"),
-    pipx: await onPath("pipx"),
-    pip: await onPath("pip"),
-  };
-}
-
-function onPath(name: string): Promise<boolean> {
-  const cmd = process.platform === "win32" ? "where" : "which";
-  return exec(cmd, [name]).then(() => true, () => false);
-}
-
-async function offerSetup(extensionPath: string) {
-  const root = workspaceRoot();
-  if (!root) {
-    return;
+function samePath(left: string | undefined, right: string | undefined): boolean {
+  if (!left || !right) {
+    return false;
   }
-  const tools = await detectTools();
-  await offer({
-    tools,
-    root,
-    extensionPath,
-    ask: (text, buttons) => vscode.window.showInformationMessage(text, ...buttons),
-    run: (command, cwd) => runCommand(command, cwd, command[0] === "decap" ? "Installing the decap hook" : "Installing decap"),
-  });
-}
-
-async function installCli(extensionPath: string) {
-  const root = workspaceRoot();
-  const tools = await detectTools();
-  const plan = explainInstall(
-    { ...tools, decap: false },
-    installTarget(extensionPath, root),
-  );
-  if (!plan.command.length) {
-    void vscode.window.showErrorMessage(plan.text);
-    return;
-  }
-  const choice = await vscode.window.showInformationMessage(plan.text, "Install", "Not now");
-  if (choice === "Install") {
-    await runCommand(plan.command, root || process.cwd(), "Installing decap");
-  }
-}
-
-async function installHook(root: string | undefined) {
-  if (!root) {
-    void vscode.window.showWarningMessage("Open a folder before installing the decap hook.");
-    return;
-  }
-  if (!fs.existsSync(path.join(root, ".git"))) {
-    void vscode.window.showWarningMessage("This folder is not a git repository.");
-    return;
-  }
-  if (hookInstalled(root)) {
-    void vscode.window.showInformationMessage("The decap hook is already installed.");
-    return;
-  }
-  await runCommand(["decap", "install"], root, "Installing the decap hook");
-}
-
-async function snap(view: DecisionView) {
-  const root = workspaceRoot();
-  if (!root) {
-    void vscode.window.showWarningMessage("Open a folder before running decap: Snap.");
-    return;
-  }
-  try {
-    await exec("decap", ["snap"], { cwd: root });
-  } catch (err) {
-    void vscode.window.showErrorMessage(plain("decap snap failed", err));
-    return;
-  }
-  view.refresh();
-}
-
-async function runCommand(command: string[], cwd: string, title: string): Promise<boolean> {
-  let ok = true;
-  await vscode.window.withProgress({
-    location: vscode.ProgressLocation.Notification,
-    title,
-  }, async () => {
-    try {
-      await exec(command[0], command.slice(1), { cwd });
-    } catch (err) {
-      ok = false;
-      void vscode.window.showErrorMessage(plain(`${title} failed`, err));
-    }
-  });
-  return ok;
-}
-
-function plain(title: string, err: unknown): string {
-  const stderr = typeof err === "object" && err && "stderr" in err ? String((err as { stderr?: string }).stderr || "") : "";
-  const detail = stderr.trim();
-  if (detail) {
-    return `${title}. ${detail}`;
-  }
-  const message = err instanceof Error ? err.message.trim() : "";
-  return message ? `${title}. ${message}` : `${title}.`;
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 class DecisionView implements vscode.WebviewViewProvider {
   lastHtml = "";
   private view?: vscode.WebviewView;
   private selected?: string;
+  private wantFocus = false;
 
   constructor(private rootOf: () => string | undefined) {}
 
@@ -195,20 +150,28 @@ class DecisionView implements vscode.WebviewViewProvider {
     this.refresh();
   }
 
+  fillWhy(folder: string) {
+    this.selected = folder;
+    this.wantFocus = true;
+    this.refresh();
+  }
+
   refresh() {
+    const focus = this.wantFocus;
     const entries = this.entries();
     const entry = entries.find((item) => item.folder === this.selected) || entries[0];
     this.selected = entry?.folder;
-    this.lastHtml = renderPage(entry, entries, (file) => this.src(file));
+    this.lastHtml = renderPage(entry, entries, (file) => this.src(file), focus);
     if (this.view) {
       this.view.webview.html = this.lastHtml;
+      this.wantFocus = false;
     }
   }
 
   standaloneHtml(): string {
     const entries = this.entries();
     const entry = entries.find((item) => item.folder === this.selected) || entries[0];
-    return renderPage(entry, entries, (file) => path.basename(file));
+    return renderPage(entry, entries, (file) => path.basename(file), this.wantFocus);
   }
 
   private src(file: string): string {

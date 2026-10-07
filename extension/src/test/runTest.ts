@@ -14,13 +14,21 @@ async function main(): Promise<void> {
   const src = path.join(workspace, "src");
   fs.mkdirSync(src);
   fs.writeFileSync(path.join(src, "app.py"), "def total(xs):\n    s = 0\n    return s\n");
+  fs.writeFileSync(path.join(src, "old.py"), "def keep():\n    value = 1\n    return value\n");
   execFileSync("git", ["add", "-A"], { cwd: workspace });
-  execFileSync("git", ["commit", "-m", "start"], { cwd: workspace });
+  const past = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  execFileSync("git", ["commit", "-m", "start"], {
+    cwd: workspace,
+    env: { ...process.env, GIT_AUTHOR_DATE: past, GIT_COMMITTER_DATE: past },
+  });
   fs.writeFileSync(path.join(src, "app.py"), "def total(xs):\n    return sum(xs)\n");
 
   const env: Record<string, string> = { DECAP_TEST: "1" };
-  if (process.env.DECAP_VIEW_DIR) {
-    env.DECAP_VIEW_DIR = process.env.DECAP_VIEW_DIR;
+  for (const key of ["DECAP_VIEW_DIR", "DECAP_E2E_OUT", "DECAP_PYTHON_TRAP"]) {
+    const value = process.env[key];
+    if (value) {
+      env[key] = value;
+    }
   }
   await runTests({
     extensionDevelopmentPath: path.resolve(__dirname, "../.."),
