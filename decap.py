@@ -508,15 +508,15 @@ def _rev_exists(start: Path, rev: str) -> bool:
     return True
 
 
-def hook_line(decap_bin: Path) -> str:
+def hook_line(*command: Path) -> str:
     """Shell text Git for Windows and Linux both run. Backslashes become slashes."""
-    text = str(decap_bin).replace("\\", "/")
-    return f"{shlex.quote(text)} hook || true"
+    text = " ".join(shlex.quote(str(part).replace("\\", "/")) for part in command)
+    return f"{text} hook || true"
 
 
-def install_hook(start: Path, decap_bin: Path) -> str:
+def install_hook(start: Path, *command: Path) -> str:
     hook = _hooks_dir(start) / "post-commit"
-    line = hook_line(decap_bin).encode()
+    line = hook_line(*command).encode()
     block = f"{BEGIN}\n".encode() + line + f"\n{END}\n".encode()
     if not hook.exists():
         hook.parent.mkdir(parents=True, exist_ok=True)
@@ -644,6 +644,8 @@ def run(start: Path, source: str, now: datetime | None = None) -> tuple[Path, ..
         if dest.exists():
             dest = root / f"{stamp}_{decision.slug}_{decision.key[:6]}"
         _publish(partial, dest)
+        # A directory rename often does not create a new note.md event for the editor.
+        (dest / "note.md").write_text(decision.note_md, encoding="utf-8", newline="\n")
         written.append(dest)
     return tuple(written)
 
@@ -709,17 +711,36 @@ def _git_message(err: subprocess.CalledProcessError) -> str:
     return text or "git command failed"
 
 
+def _parse(argv: list[str]) -> tuple[str, tuple[Path, ...] | None] | None:
+    if argv == ["install"]:
+        return ("install", None)
+    if len(argv) == 5 and argv[0] == "install" and argv[1] == "--python" and argv[3] == "--script":
+        return ("install", (Path(argv[2]), Path(argv[4])))
+    if len(argv) == 1 and argv[0] in ("snap", "hook"):
+        return (argv[0], None)
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
-    if len(argv) != 1 or argv[0] not in ("install", "snap", "hook"):
-        print("usage: decap install | snap | hook", file=sys.stderr)
+    parsed = _parse(argv)
+    if parsed is None:
+        print("usage: decap install [--python PATH --script PATH] | snap | hook", file=sys.stderr)
         return 2
     start = Path.cwd()
-    command = argv[0]
+    command, runtime = parsed
     if command == "install":
         try:
-            action = install_hook(start, decap_executable())
+            if runtime is None:
+                parts: tuple[Path, ...] = (decap_executable(),)
+            else:
+                python, script = runtime
+                if not python.is_file() or not script.is_file():
+                    missing = python if not python.is_file() else script
+                    raise FileNotFoundError(missing)
+                parts = runtime
+            action = install_hook(start, *parts)
             print(f"decap: {action} {_hooks_dir(start) / 'post-commit'}")
         except subprocess.CalledProcessError as err:
             print(f"decap: {_git_message(err)}", file=sys.stderr)

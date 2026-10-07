@@ -364,6 +364,32 @@ def test_hook_line_uses_forward_slashes():
     assert quoted == "'C:/Users/Ada Smith/decap.exe' hook || true"
 
 
+def test_hook_line_quotes_python_and_the_script():
+    line = hook_line(
+        Path("C:/Program Files/Python312/python.exe"),
+        Path("C:/ext/decap.py"),
+    )
+    assert line == "'C:/Program Files/Python312/python.exe' C:/ext/decap.py hook || true"
+
+
+def test_install_with_python_and_script(tmp_path, monkeypatch):
+    from decap import main
+
+    repo = git_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    python = tmp_path / "Python312" / "python.exe"
+    python.parent.mkdir()
+    python.write_bytes(b"")
+    script = tmp_path / "bundled" / "decap.py"
+    script.parent.mkdir()
+    script.write_bytes(b"")
+    assert main(["install", "--python", str(python), "--script", str(script)]) == 0
+    text = (repo / ".git" / "hooks" / "post-commit").read_text(encoding="utf-8").replace("\\", "/")
+    assert "# decap: begin" in text
+    assert str(python).replace("\\", "/") in text
+    assert str(script).replace("\\", "/") in text
+
+
 def test_parse_diff_drops_carriage_returns():
     text = ONE_HUNK.replace("\n", "\r\n")
     entries = parse_diff(text)
