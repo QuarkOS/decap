@@ -9,6 +9,7 @@ from decap import (
     Kind,
     Line,
     NewFile,
+    ShotLine,
     TextHunk,
     install_hook,
     parse_diff,
@@ -141,8 +142,18 @@ def test_note_and_age_gate():
         "\n"
         "Why:\n"
     )
-    assert decision.before_lines == ("keep", "old", "tail")
-    assert decision.after_lines == ("new",)
+    assert [(line.text, line.marked) for line in decision.before_lines] == [
+        ("keep", False),
+        ("old", True),
+        ("tail", False),
+    ]
+    assert [(line.text, line.marked) for line in decision.after_lines] == [
+        ("keep", False),
+        ("new", True),
+        ("tail", False),
+    ]
+    assert decision.before_header == "src/app.py  lines 10-12  ·  lived 2 days"
+    assert decision.after_header == "src/app.py  lines 10-12  ·  lived 2 days"
 
     young = {11: int((now - timedelta(hours=1)).timestamp())}
 
@@ -249,7 +260,7 @@ def test_min_age_config(tmp_path):
     assert run(repo, "commit") == ()
 
 
-def test_both_sides_keep_the_same_context():
+def test_both_sides_keep_the_same_context(tmp_path):
     hunk = TextHunk(
         "src/total.py",
         1,
@@ -279,27 +290,46 @@ def test_both_sides_keep_the_same_context():
     )[0]
     assert decision.before_start == 1
     assert decision.after_start == 1
-    assert [line for line in decision.before_lines] == [
-        "def total(xs):",
-        "    s = 0",
-        "    for x in xs:",
-        "        s += x",
-        "    return s",
+    assert [(line.text, line.marked) for line in decision.before_lines] == [
+        ("def total(xs):", False),
+        ("    s = 0", True),
+        ("    for x in xs:", True),
+        ("        s += x", True),
+        ("    return s", True),
     ]
-    assert [line for line in decision.after_lines] == [
-        "def total(xs):",
-        "    return sum(xs)",
+    assert [(line.text, line.marked) for line in decision.after_lines] == [
+        ("def total(xs):", False),
+        ("    return sum(xs)", True),
     ]
+    assert decision.before_header == "src/total.py  lines 1-5  ·  lived 2 days"
+    assert decision.after_header == "src/total.py  lines 1-2  ·  lived 2 days"
+    before = tmp_path / "before.png"
+    after = tmp_path / "after.png"
+    render_png(
+        decision.before_lines, decision.before_header, decision.path,
+        decision.before_start, before, "#fde8e8",
+    )
+    render_png(
+        decision.after_lines, decision.after_header, decision.path,
+        decision.after_start, after, "#e6f4ea",
+    )
+    before_colors = set(Image.open(before).convert("RGB").get_flattened_data())
+    after_colors = set(Image.open(after).convert("RGB").get_flattened_data())
+    assert (253, 232, 232) in before_colors
+    assert (253, 232, 232) not in after_colors
+    assert (230, 244, 234) in after_colors
+    assert (230, 244, 234) not in before_colors
 
 
 def test_render_png_is_a_real_image(tmp_path):
     dest = tmp_path / "out" / "before.png"
     render_png(
-        ("keep", "old"),
+        (ShotLine("keep", False), ShotLine("old", True)),
         "src/app.py  lines 10-11  ·  lived 2 days",
         "src/app.py",
         10,
         dest,
+        "#fde8e8",
     )
     with Image.open(dest) as image:
         assert image.format == "PNG"

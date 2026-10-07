@@ -65,13 +65,20 @@ class BinaryHunk:
 
 
 @dataclass(frozen=True)
+class ShotLine:
+    text: str
+    marked: bool
+
+
+@dataclass(frozen=True)
 class Decision:
     key: str
     slug: str
     path: str
-    header: str
-    before_lines: tuple[str, ...]
-    after_lines: tuple[str, ...]
+    before_header: str
+    after_header: str
+    before_lines: tuple[ShotLine, ...]
+    after_lines: tuple[ShotLine, ...]
     before_start: int
     after_start: int
     note_md: str
@@ -244,56 +251,60 @@ def _change_key(source: str, hunk: TextHunk) -> str:
     return hashlib.sha256("".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
-def _fit(lines: tuple[str, ...]) -> tuple[str, ...]:
+def _fit(lines: tuple[ShotLine, ...]) -> tuple[ShotLine, ...]:
     clipped = []
     for line in lines:
-        if len(line) > MAX_COLUMNS:
-            clipped.append(line[: MAX_COLUMNS - 1] + "…")
-        else:
-            clipped.append(line)
+        text = line.text
+        if len(text) > MAX_COLUMNS:
+            text = text[: MAX_COLUMNS - 1] + "…"
+        clipped.append(ShotLine(text, line.marked))
     if len(clipped) <= MAX_LINES:
         return tuple(clipped)
     hidden = len(clipped) - MAX_LINES
-    return tuple(clipped[:MAX_LINES] + [f"… truncated, {hidden} lines not shown"])
+    marker = ShotLine(f"… truncated, {hidden} lines not shown", False)
+    return tuple(clipped[:MAX_LINES] + [marker])
 
 
 def _span(start: int, end: int) -> str:
     return str(start) if start == end else f"{start}-{end}"
 
 
-def _sides(hunk: TextHunk) -> tuple[tuple[str, ...], tuple[str, ...], int, int, str]:
-    before: list[str] = []
-    after: list[str] = []
+def _sides(hunk: TextHunk) -> tuple[tuple[ShotLine, ...], tuple[ShotLine, ...], int, int, str, str]:
+    before: list[ShotLine] = []
+    after: list[ShotLine] = []
     old_no, new_no = hunk.old_start, hunk.new_start
-    old_end = added_first = added_last = None
-    removed = False
+    old_end = new_end = None
+    after_start = 1
     for line in hunk.lines:
-        if line.kind is Kind.CONTEXT:
-            before.append(line.text)
+        if line.kind is Kind.REMOVED:
+            before.append(ShotLine(line.text, True))
             old_end = old_no
             old_no += 1
+            continue
+        if line.kind is Kind.ADDED:
+            if not after:
+                after_start = new_no if new_no else 1
+            after.append(ShotLine(line.text, True))
+            new_end = new_no
             new_no += 1
-        elif line.kind is Kind.REMOVED:
-            before.append(line.text)
-            removed = True
-            old_end = old_no
-            old_no += 1
-        else:
-            if added_first is None:
-                added_first = new_no
-            added_last = new_no
-            after.append(line.text)
-            new_no += 1
-    before_start = hunk.old_start if before else 1
-    if after:
-        after_start = added_first if added_first is not None else 1
-    elif removed:
-        after, after_start = ["(deleted)"], 1
-    else:
+            continue
+        if not after:
+            after_start = new_no if new_no else 1
+        before.append(ShotLine(line.text, False))
+        after.append(ShotLine(line.text, False))
+        old_end = old_no
+        new_end = new_no
+        old_no += 1
+        new_no += 1
+    before_start = hunk.old_start if before and hunk.old_start else 1
+    if not after:
+        after = [ShotLine("(deleted)", False)]
         after_start = 1
-    old_span = "" if old_end is None else _span(hunk.old_start, old_end)
-    new_span = "" if added_first is None or added_last is None else _span(added_first, added_last)
-    return _fit(tuple(before)), _fit(tuple(after)), before_start, after_start, old_span or new_span
+        after_span = "deleted"
+    else:
+        after_span = "" if new_end is None else _span(after_start, new_end)
+    before_span = "" if old_end is None else _span(before_start, old_end)
+    return _fit(tuple(before)), _fit(tuple(after)), before_start, after_start, before_span, after_span
 
 
 def _ignored(path: str) -> bool:
@@ -301,20 +312,30 @@ def _ignored(path: str) -> bool:
     return name in LOCK_NAMES or name.endswith(".lock") or any(path.endswith(suffix) for suffix in SKIP_SUFFIXES)
 
 
-def _decision(hunk: TextHunk, key: str, age: timedelta | None, commit: str) -> Decision:
-    before, after, before_start, after_start, span = _sides(hunk)
-    label = _age_label(age)
+def _header(path: str, span: str, label: str) -> str:
     lived = f"  ·  lived {label}" if label else ""
+    if span == "deleted":
+        return f"{path}  deleted{lived}"
+    if not span:
+        return f"{path}{lived}"
+    return f"{path}  lines {span}{lived}"
+
+
+def _decision(hunk: TextHunk, key: str, age: timedelta | None, commit: str) -> Decision:
+    before, after, before_start, after_start, before_span, after_span = _sides(hunk)
+    label = _age_label(age)
     slug = re.sub(r"[^A-Za-z0-9._-]", "_", hunk.path)
+    note_span = before_span or after_span
     note = (
-        f"---\ncommit: {commit}\nfile: {hunk.path}\nlines: {span}\n"
+        f"---\ncommit: {commit}\nfile: {hunk.path}\nlines: {note_span}\n"
         f"age: {label}\nchange: {key}\n---\n\nWhy:\n"
     )
     return Decision(
         key=key,
         slug=f"{slug}_{hunk.old_start}"[:60],
         path=hunk.path,
-        header=f"{hunk.path}  lines {span}{lived}",
+        before_header=_header(hunk.path, before_span, label),
+        after_header=_header(hunk.path, after_span, label),
         before_lines=before,
         after_lines=after,
         before_start=before_start,
@@ -374,11 +395,18 @@ def _font(size: int = 18):
     return ImageFont.load_default()
 
 
-def _marker(line: str) -> bool:
-    return line.startswith("… truncated, ") and line.endswith(" lines not shown")
+def _marker(line: ShotLine) -> bool:
+    return line.text.startswith("… truncated, ") and line.text.endswith(" lines not shown")
 
 
-def render_png(lines: tuple[str, ...], header: str, lexer_path: str, first_line: int, dest: Path) -> None:
+def render_png(
+    lines: tuple[ShotLine, ...],
+    header: str,
+    lexer_path: str,
+    first_line: int,
+    dest: Path,
+    tint: str,
+) -> None:
     font = _font()
     try:
         lexer = get_lexer_for_filename(lexer_path)
@@ -393,7 +421,7 @@ def render_png(lines: tuple[str, ...], header: str, lexer_path: str, first_line:
     numbered = [line for line in lines if not _marker(line)]
     last_no = first_line + max(len(numbered) - 1, 0)
     gutter = px(str(last_no)) + 16
-    longest = max((px(line) for line in lines), default=0)
+    longest = max((px(line.text) for line in lines), default=0)
     natural = padding * 2 + max(px(header), gutter + longest)
     cap = padding * 2 + gutter + px("M") * (MAX_COLUMNS + 1)
     width = max(1, min(natural, cap))
@@ -404,12 +432,14 @@ def render_png(lines: tuple[str, ...], header: str, lexer_path: str, first_line:
     draw.text((padding, (band - line_height) // 2), header, font=font, fill="#1c2834")
     y, number, code_x = band, first_line, padding + gutter
     for line in lines:
+        if line.marked:
+            draw.rectangle((0, y, width, y + line_height), fill=tint)
         if _marker(line):
-            draw.text((code_x, y), line, font=font, fill=ink)
+            draw.text((code_x, y), line.text, font=font, fill=ink)
         else:
             draw.text((padding, y), str(number), font=font, fill="#8b98a5")
             x = code_x
-            for token, value in lex(line, lexer):
+            for token, value in lex(line.text, lexer):
                 value = value.replace("\n", "")
                 if value == "":
                     continue
@@ -574,8 +604,14 @@ def run(start: Path, source: str, now: datetime | None = None) -> tuple[Path, ..
         if partial.exists():
             shutil.rmtree(partial)
         partial.mkdir(parents=True)
-        render_png(decision.before_lines, decision.header, decision.path, decision.before_start, partial / "before.png")
-        render_png(decision.after_lines, decision.header, decision.path, decision.after_start, partial / "after.png")
+        render_png(
+            decision.before_lines, decision.before_header, decision.path,
+            decision.before_start, partial / "before.png", "#fde8e8",
+        )
+        render_png(
+            decision.after_lines, decision.after_header, decision.path,
+            decision.after_start, partial / "after.png", "#e6f4ea",
+        )
         (partial / "note.md").write_text(decision.note_md, encoding="utf-8", newline="\n")
         dest = root / f"{stamp}_{decision.slug}"
         if dest.exists():
