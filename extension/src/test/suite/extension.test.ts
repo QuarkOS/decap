@@ -24,7 +24,7 @@ interface Api {
 }
 
 async function api(): Promise<Api> {
-  const ext = vscode.extensions.getExtension<Api>("decap.decap");
+  const ext = vscode.extensions.getExtension<Api>("quarkos.decap");
   assert.ok(ext, "decap extension is installed in the test host");
   return ext.activate();
 }
@@ -42,7 +42,7 @@ suite("decap extension", () => {
     const exported = await api();
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     assert.ok(root);
-    const ext = vscode.extensions.getExtension("decap.decap");
+    const ext = vscode.extensions.getExtension("quarkos.decap");
     assert.ok(ext);
     let ran = false;
     const text = await exported.offer({
