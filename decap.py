@@ -2,6 +2,7 @@ import hashlib
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -123,11 +124,11 @@ def _parse_section(section: str) -> tuple[DiffEntry, ...]:
         while index < len(lines):
             line = lines[index]
             if line.startswith("+"):
-                body.append(Line(Kind.ADDED, line[1:]))
+                body.append(Line(Kind.ADDED, line[1:].rstrip("\r")))
             elif line.startswith("-"):
-                body.append(Line(Kind.REMOVED, line[1:]))
+                body.append(Line(Kind.REMOVED, line[1:].rstrip("\r")))
             elif line.startswith(" "):
-                body.append(Line(Kind.CONTEXT, line[1:]))
+                body.append(Line(Kind.CONTEXT, line[1:].rstrip("\r")))
             elif line.startswith("\\"):
                 pass
             else:
@@ -373,25 +374,38 @@ def select_decisions(
     return tuple(chosen)
 
 
+FONT_NAMES = ("DejaVuSansMono.ttf", "LiberationMono-Regular.ttf", "consola.ttf", "Consolas.ttf")
+
+
+def font_roots() -> tuple[str, ...]:
+    roots = ["/usr/share/fonts"]
+    windir = os.environ.get("WINDIR")
+    if windir:
+        roots.append(os.path.join(windir, "Fonts"))
+    elif os.name == "nt":
+        roots.append(r"C:\Windows\Fonts")
+    return tuple(roots)
+
+
+def find_font(roots: tuple[str, ...]) -> str | None:
+    """First monospace file in FONT_NAMES order. DejaVu wins over Consolas."""
+    for name in FONT_NAMES:
+        for root in roots:
+            if not os.path.isdir(root):
+                continue
+            for dirpath, _dirs, files in os.walk(root):
+                if name in files:
+                    return os.path.join(dirpath, name)
+    return None
+
+
 def _font(size: int = 18):
-    names = ("DejaVuSansMono.ttf", "LiberationMono-Regular.ttf")
-    found: dict[str, str] = {}
-    root = "/usr/share/fonts"
-    if os.path.isdir(root):
-        for dirpath, _dirs, files in os.walk(root):
-            for name in names:
-                if name in files and name not in found:
-                    found[name] = os.path.join(dirpath, name)
-            if len(found) == len(names):
-                break
-    for name in names:
-        path = found.get(name)
-        if path is None:
-            continue
+    path = find_font(font_roots())
+    if path is not None:
         try:
             return ImageFont.truetype(path, size)
         except OSError:
-            continue
+            pass
     return ImageFont.load_default()
 
 
@@ -494,9 +508,15 @@ def _rev_exists(start: Path, rev: str) -> bool:
     return True
 
 
+def hook_line(decap_bin: Path) -> str:
+    """Shell text Git for Windows and Linux both run. Backslashes become slashes."""
+    text = str(decap_bin).replace("\\", "/")
+    return f"{shlex.quote(text)} hook || true"
+
+
 def install_hook(start: Path, decap_bin: Path) -> str:
     hook = _hooks_dir(start) / "post-commit"
-    line = f"{decap_bin} hook || true".encode()
+    line = hook_line(decap_bin).encode()
     block = f"{BEGIN}\n".encode() + line + f"\n{END}\n".encode()
     if not hook.exists():
         hook.parent.mkdir(parents=True, exist_ok=True)
@@ -521,17 +541,24 @@ def install_hook(start: Path, decap_bin: Path) -> str:
     return "updated"
 
 
-def decap_executable() -> Path:
-    raw = sys.argv[0]
-    if os.sep in raw:
+def resolve_decap(raw: str, found: str | None) -> Path:
+    if os.sep in raw or (os.altsep is not None and os.altsep in raw):
         path = Path(raw)
     else:
-        found = shutil.which("decap")
         path = Path(found) if found else Path(raw)
     path = path.resolve()
-    if not path.exists():
-        raise FileNotFoundError(path)
-    return path
+    if path.exists():
+        return path
+    if path.suffix.lower() != ".exe":
+        exe = Path(str(path) + ".exe")
+        if exe.exists():
+            return exe
+    raise FileNotFoundError(path)
+
+
+def decap_executable() -> Path:
+    found = None if (os.sep in sys.argv[0] or (os.altsep is not None and os.altsep in sys.argv[0])) else shutil.which("decap")
+    return resolve_decap(sys.argv[0], found)
 
 
 def _captured(top: Path) -> frozenset[str]:
@@ -544,7 +571,7 @@ def _captured(top: Path) -> frozenset[str]:
             continue
         note = child / "note.md"
         if note.is_file():
-            key = _note_key(note.read_text(encoding="utf-8"))
+            key = _note_key(note.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n"))
             if key:
                 keys.add(key)
     return frozenset(keys)
@@ -571,11 +598,11 @@ def run(start: Path, source: str, now: datetime | None = None) -> tuple[Path, ..
     if source == "commit":
         if _rev_exists(start, "HEAD^2") or not _rev_exists(start, "HEAD^"):
             return ()
-        diff = _git(start, "diff", f"-U{CONTEXT_LINES}", "--no-renames", "--no-ext-diff", "HEAD^", "HEAD")
+        diff = _diff(start, "HEAD^", "HEAD")
         rev, min_age = "HEAD^", _min_age(start)
         commit = _git(start, "rev-parse", "HEAD").strip()
     elif source == "worktree":
-        diff = _git(start, "diff", f"-U{CONTEXT_LINES}", "--no-renames", "--no-ext-diff", "HEAD")
+        diff = _diff(start, "HEAD")
         rev, min_age, commit = "HEAD", None, "uncommitted"
     else:
         raise ValueError("source must be commit or worktree")
@@ -616,17 +643,64 @@ def run(start: Path, source: str, now: datetime | None = None) -> tuple[Path, ..
         dest = root / f"{stamp}_{decision.slug}"
         if dest.exists():
             dest = root / f"{stamp}_{decision.slug}_{decision.key[:6]}"
-        os.replace(partial, dest)
+        _publish(partial, dest)
         written.append(dest)
     return tuple(written)
 
 
+def _diff(start: Path, *revs: str) -> str:
+    return _git(
+        start, "diff", f"-U{CONTEXT_LINES}", "--no-renames", "--no-ext-diff",
+        "--ignore-cr-at-eol", *revs,
+    )
+
+
+def _publish(partial: Path, dest: Path) -> None:
+    try:
+        os.replace(partial, dest)
+    except OSError:
+        shutil.move(str(partial), str(dest))
+
+
 def notify(folders: tuple[Path, ...]) -> None:
-    if not folders or shutil.which("notify-send") is None:
+    if not folders:
+        return
+    body = "\n".join(str(folder) for folder in folders)
+    if os.name == "nt":
+        _notify_windows(body)
+        return
+    if shutil.which("notify-send") is None:
         return
     try:
-        subprocess.run(["notify-send", "decap", "\n".join(str(folder) for folder in folders)], check=False)
+        subprocess.run(["notify-send", "decap", body], check=False)
     except OSError:
+        return
+
+
+def _notify_windows(body: str) -> None:
+    if shutil.which("powershell") is None:
+        return
+    script = (
+        "$body = $env:DECAP_NOTIFY\n"
+        "try {\n"
+        "  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null\n"
+        "  [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null\n"
+        "  $safe = [System.Security.SecurityElement]::Escape($body)\n"
+        "  $xml = \"<toast><visual><binding template='ToastText02'><text id='1'>decap</text><text id='2'>\" + $safe + \"</text></binding></visual></toast>\"\n"
+        "  $doc = New-Object Windows.Data.Xml.Dom.XmlDocument\n"
+        "  $doc.LoadXml($xml)\n"
+        "  $toast = [Windows.UI.Notifications.ToastNotification]::new($doc)\n"
+        "  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('decap').Show($toast)\n"
+        "} catch { exit 0 }\n"
+    )
+    env = os.environ.copy()
+    env["DECAP_NOTIFY"] = body
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            env=env, check=False, timeout=8, capture_output=True,
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return
 
 

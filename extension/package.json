@@ -1,0 +1,76 @@
+{
+  "name": "decap",
+  "displayName": "decap",
+  "description": "Guided setup and a sidebar for decap decision captures.",
+  "version": "0.1.0",
+  "publisher": "decap",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/QuarkOS/decap.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "decap.snap",
+        "title": "decap: Snap"
+      },
+      {
+        "command": "decap.installHook",
+        "title": "decap: Install hook"
+      },
+      {
+        "command": "decap.installCli",
+        "title": "decap: Install CLI"
+      },
+      {
+        "command": "decap.openDecisions",
+        "title": "decap: Open decisions"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "decap.snap",
+        "key": "alt+shift+s",
+        "mac": "alt+shift+s"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "decap",
+          "title": "decap",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "decap": [
+        {
+          "type": "webview",
+          "id": "decap.decisions",
+          "name": "Decisions"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "test": "npm run compile && node ./out/test/runTest.js",
+    "package": "vsce package --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.2.1",
+    "mocha": "^10.7.3",
+    "typescript": "^5.5.4"
+  }
+}
