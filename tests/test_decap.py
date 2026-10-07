@@ -249,6 +249,49 @@ def test_min_age_config(tmp_path):
     assert run(repo, "commit") == ()
 
 
+def test_both_sides_keep_the_same_context():
+    hunk = TextHunk(
+        "src/total.py",
+        1,
+        1,
+        (
+            Line(Kind.CONTEXT, "def total(xs):"),
+            Line(Kind.REMOVED, "    s = 0"),
+            Line(Kind.REMOVED, "    for x in xs:"),
+            Line(Kind.REMOVED, "        s += x"),
+            Line(Kind.REMOVED, "    return s"),
+            Line(Kind.ADDED, "    return sum(xs)"),
+        ),
+    )
+    now = datetime(2026, 10, 7, tzinfo=timezone.utc)
+    blame = {
+        line: int((now - timedelta(hours=48)).timestamp())
+        for line in (2, 3, 4, 5)
+    }
+    decision = select_decisions(
+        (hunk,),
+        lambda _path: blame,
+        source="commit",
+        commit="abc123",
+        min_age=timedelta(hours=12),
+        captured=frozenset(),
+        now=now,
+    )[0]
+    assert decision.before_start == 1
+    assert decision.after_start == 1
+    assert [line for line in decision.before_lines] == [
+        "def total(xs):",
+        "    s = 0",
+        "    for x in xs:",
+        "        s += x",
+        "    return s",
+    ]
+    assert [line for line in decision.after_lines] == [
+        "def total(xs):",
+        "    return sum(xs)",
+    ]
+
+
 def test_render_png_is_a_real_image(tmp_path):
     dest = tmp_path / "out" / "before.png"
     render_png(
