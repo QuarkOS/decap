@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { SetupGap, setupCopy } from "./runtime";
 
 export interface Entry {
   folder: string;
@@ -52,10 +53,49 @@ export function joinWhy(front: string, why: string): string {
   return front.endsWith("\n") ? front + body : `${front}\n${body}`;
 }
 
+export function renderWelcome(gap: SetupGap): string {
+  const copy = setupCopy(gap);
+  const link = copy.link
+    ? `<p><a id="install-python" href="${escapeAttr(copy.link)}">Install Python</a></p>`
+    : "";
+  const button = copy.button ? `<button id="setup" type="button">Set up decap</button>` : "";
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: sans-serif; color: #1c2834; background: #fff; margin: 0; padding: 16px; line-height: 1.4; }
+  button { margin-top: 12px; padding: 8px 12px; }
+</style>
+</head>
+<body>
+  <h2>${escapeText(copy.heading)}</h2>
+  <p>${escapeText(copy.body)}</p>
+  ${link}
+  ${button}
+  <script>
+    const vscodeApi = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : undefined;
+    const setup = document.getElementById("setup");
+    if (setup && vscodeApi) {
+      setup.addEventListener("click", () => vscodeApi.postMessage({ type: "setup" }));
+    }
+    const installPython = document.getElementById("install-python");
+    if (installPython && vscodeApi) {
+      installPython.addEventListener("click", (event) => {
+        event.preventDefault();
+        vscodeApi.postMessage({ type: "install-python" });
+      });
+    }
+  </script>
+</body>
+</html>`;
+}
+
 export function renderPage(
   entry: Entry | undefined,
   entries: Entry[],
   src: (file: string) => string,
+  focusWhy = false,
 ): string {
   const items = entries.map((item) => {
     const selected = entry && item.folder === entry.folder ? " selected" : "";
@@ -69,7 +109,7 @@ export function renderPage(
       </div>
       <pre class="front">${escapeText(parts.front)}</pre>
       <label for="why">Why</label>
-      <textarea id="why">${escapeText(parts.why)}</textarea>`
+      <textarea id="why"${focusWhy ? " autofocus" : ""}>${escapeText(parts.why)}</textarea>`
     : `<p class="empty">No decisions yet. Run decap: Snap, or commit a change to a line that is at least 12 hours old.</p>`;
   const folder = entry ? entry.folder : "";
   return `<!DOCTYPE html>
@@ -103,6 +143,9 @@ export function renderPage(
     const why = document.getElementById("why");
     if (why && vscodeApi) {
       why.addEventListener("change", () => vscodeApi.postMessage({ type: "why", folder: ${JSON.stringify(folder)}, text: why.value }));
+    }
+    if (why && ${focusWhy ? "true" : "false"}) {
+      why.focus();
     }
   </script>
 </body>

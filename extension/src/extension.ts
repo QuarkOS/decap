@@ -1,48 +1,199 @@
-import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { promisify } from "util";
 import * as vscode from "vscode";
-import { explainHook, explainInstall, hookInstalled, installTarget, offer, Tools } from "./setup";
-import { joinWhy, listDecisions, renderPage, splitWhy } from "./view";
-
-const exec = promisify(execFile);
+import {
+  PYTHON_DOWNLOAD,
+  Runtime,
+  SetupGap,
+  assess,
+  capturePrompt,
+  ensureRuntime,
+  findPython,
+  hookReady,
+  installHook,
+  isGitRepo,
+  pythonMissingText,
+  runDecap,
+  statusLabel,
+  venvPython,
+} from "./runtime";
+import { listDecisions, renderPage, renderWelcome, splitWhy, joinWhy } from "./view";
 
 export async function activate(context: vscode.ExtensionContext) {
-  const prompts: string[] = [];
+  const prompts: { message: string; action: string }[] = [];
+  const storage = context.globalStorageUri.fsPath;
+  const script = path.join(context.extensionPath, "bundled", "decap.py");
   const view = new DecisionView(() => workspaceRoot());
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  status.command = "decap.setup";
+  let statusVisible = false;
+  let gap: SetupGap = "runtime";
+  let runtime: Runtime | undefined;
+
+  function bundledRuntime(): Runtime {
+    return { python: venvPython(storage), script: path.resolve(script) };
+  }
+
+  function applyGap(next: SetupGap) {
+    gap = next;
+    view.setGap(next);
+    const label = statusLabel(next);
+    if (!label) {
+      status.hide();
+      status.text = "";
+      statusVisible = false;
+      return;
+    }
+    status.text = label;
+    status.tooltip = next === "python"
+      ? pythonMissingText()
+      : "decap is not set up for this repository";
+    status.show();
+    statusVisible = true;
+  }
+
+  async function refreshSetup() {
+    const python = await findPython();
+    const current = bundledRuntime();
+    const ready = fs.existsSync(current.python) && fs.existsSync(path.join(storage, "runtime", ".decap-ready"));
+    if (ready) {
+      runtime = current;
+    }
+    const root = workspaceRoot();
+    applyGap(assess({
+      pythonFound: Boolean(python),
+      runtimeReady: ready && fs.existsSync(script),
+      inRepo: isGitRepo(root),
+      hookReady: Boolean(root && runtime && hookReady(root, runtime)),
+    }));
+  }
+
+  async function setup(): Promise<void> {
+    const python = await findPython();
+    if (!python) {
+      applyGap("python");
+      const choice = await vscode.window.showErrorMessage(pythonMissingText(), "Install Python");
+      if (choice === "Install Python") {
+        await vscode.env.openExternal(vscode.Uri.parse(PYTHON_DOWNLOAD));
+      }
+      return;
+    }
+    const root = workspaceRoot();
+    if (!isGitRepo(root)) {
+      applyGap("repo");
+      void vscode.window.showWarningMessage("Open a git repository before setting up decap.");
+      return;
+    }
+    try {
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "Setting up decap",
+      }, async (progress) => {
+        runtime = await ensureRuntime({
+          basePython: python,
+          storage,
+          script,
+          onProgress: (text) => progress.report({ message: text }),
+        });
+        progress.report({ message: "Adding the post-commit hook" });
+        await installHook(runtime, root);
+      });
+    } catch (err) {
+      void vscode.window.showErrorMessage(plain("Setting up decap failed", err));
+      return;
+    }
+    await refreshSetup();
+    void vscode.window.showInformationMessage("decap is set up. Commits that change an old line will show up here.");
+  }
+
+  context.subscriptions.push(status);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("decap.decisions", view),
   );
   context.subscriptions.push(
-    vscode.commands.registerCommand("decap.snap", () => snap(view)),
-    vscode.commands.registerCommand("decap.installHook", () => installHook(workspaceRoot())),
-    vscode.commands.registerCommand("decap.installCli", () => installCli(context.extensionPath)),
+    vscode.commands.registerCommand("decap.setup", () => setup()),
+    vscode.commands.registerCommand("decap.snap", () => snap()),
+    vscode.commands.registerCommand("decap.installHook", () => setup()),
     vscode.commands.registerCommand("decap.openDecisions", async () => {
       await vscode.commands.executeCommand("decap.decisions.focus");
       view.refresh();
     }),
   );
-  const watcher = vscode.workspace.createFileSystemWatcher("**/.decisions/**/note.md");
-  watcher.onDidCreate((uri) => {
-    view.refresh();
-    const name = path.basename(path.dirname(uri.fsPath));
-    void vscode.window.showInformationMessage(`decap saved ${name}`, "Open").then((choice) => {
-      if (choice === "Open") {
-        view.select(path.dirname(uri.fsPath));
-        void vscode.commands.executeCommand("decap.openDecisions");
-      }
-    });
+  view.onSetup(() => {
+    void setup();
   });
-  context.subscriptions.push(watcher);
-  if (process.env.DECAP_TEST !== "1") {
-    void offerSetup(context.extensionPath);
+  const announced = new Set<string>();
+  const rootAtStart = workspaceRoot();
+  if (rootAtStart) {
+    for (const entry of listDecisions(rootAtStart)) {
+      announced.add(entry.folder);
+    }
   }
+  const watcher = vscode.workspace.createFileSystemWatcher("**/.decisions/**/note.md");
+  const announce = () => {
+    const root = workspaceRoot();
+    if (!root) {
+      return;
+    }
+    for (const entry of listDecisions(root)) {
+      if (announced.has(entry.folder)) {
+        continue;
+      }
+      announced.add(entry.folder);
+      const folder = entry.folder;
+      const prompt = capturePrompt(entry.name);
+      prompts.push(prompt);
+      view.refresh();
+      if (process.env.DECAP_TEST === "1") {
+        continue;
+      }
+      void vscode.window.showInformationMessage(prompt.message, prompt.action).then((choice) => {
+        if (choice === prompt.action) {
+          fillWhy(folder);
+        }
+      });
+    }
+  };
+  watcher.onDidCreate(announce);
+  watcher.onDidChange(announce);
+  const poll = setInterval(announce, 1000);
+  context.subscriptions.push(watcher, { dispose: () => clearInterval(poll) });
+  await refreshSetup();
+
+  function fillWhy(folder: string) {
+    view.fillWhy(folder);
+    void vscode.commands.executeCommand("decap.decisions.focus");
+  }
+
+  async function snap() {
+    const root = workspaceRoot();
+    if (!isGitRepo(root)) {
+      void vscode.window.showWarningMessage("Open a git repository before running decap: Snap.");
+      return;
+    }
+    if (!runtime || gap !== "ready") {
+      void vscode.window.showWarningMessage("Set up decap before snapping. The status bar stays visible until setup finishes.");
+      return;
+    }
+    try {
+      await runDecap(runtime, root, "snap");
+    } catch (err) {
+      void vscode.window.showErrorMessage(plain("decap snap failed", err));
+      return;
+    }
+    view.refresh();
+  }
+
   return {
-    prompts,
-    explainInstall,
-    explainHook,
-    offer,
+    capturePrompt,
+    pythonMissingText,
+    assess,
+    statusText: () => (statusVisible ? status.text : ""),
+    gap: () => gap,
+    showGap: (next: SetupGap) => applyGap(next),
+    setup,
+    fillWhy,
+    prompts: () => prompts,
     entries: () => view.entries(),
     lastHtml: () => view.lastHtml,
     standaloneHtml: () => view.standaloneHtml(),
@@ -58,104 +209,7 @@ function workspaceRoot(): string | undefined {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 }
 
-async function detectTools(): Promise<Tools> {
-  return {
-    decap: await onPath("decap"),
-    pipx: await onPath("pipx"),
-    pip: await onPath("pip"),
-  };
-}
-
-function onPath(name: string): Promise<boolean> {
-  const cmd = process.platform === "win32" ? "where" : "which";
-  return exec(cmd, [name]).then(() => true, () => false);
-}
-
-async function offerSetup(extensionPath: string) {
-  const root = workspaceRoot();
-  if (!root) {
-    return;
-  }
-  const tools = await detectTools();
-  await offer({
-    tools,
-    root,
-    extensionPath,
-    ask: (text, buttons) => vscode.window.showInformationMessage(text, ...buttons),
-    run: (command, cwd) => runCommand(command, cwd, command[0] === "decap" ? "Installing the decap hook" : "Installing decap"),
-  });
-}
-
-async function installCli(extensionPath: string) {
-  const root = workspaceRoot();
-  const tools = await detectTools();
-  const plan = explainInstall(
-    { ...tools, decap: false },
-    installTarget(extensionPath, root),
-  );
-  if (!plan.command.length) {
-    void vscode.window.showErrorMessage(plan.text);
-    return;
-  }
-  const choice = await vscode.window.showInformationMessage(plan.text, "Install", "Not now");
-  if (choice === "Install") {
-    await runCommand(plan.command, root || process.cwd(), "Installing decap");
-  }
-}
-
-async function installHook(root: string | undefined) {
-  if (!root) {
-    void vscode.window.showWarningMessage("Open a folder before installing the decap hook.");
-    return;
-  }
-  if (!fs.existsSync(path.join(root, ".git"))) {
-    void vscode.window.showWarningMessage("This folder is not a git repository.");
-    return;
-  }
-  if (hookInstalled(root)) {
-    void vscode.window.showInformationMessage("The decap hook is already installed.");
-    return;
-  }
-  await runCommand(["decap", "install"], root, "Installing the decap hook");
-}
-
-async function snap(view: DecisionView) {
-  const root = workspaceRoot();
-  if (!root) {
-    void vscode.window.showWarningMessage("Open a folder before running decap: Snap.");
-    return;
-  }
-  try {
-    await exec("decap", ["snap"], { cwd: root });
-  } catch (err) {
-    void vscode.window.showErrorMessage(plain("decap snap failed", err));
-    return;
-  }
-  view.refresh();
-}
-
-async function runCommand(command: string[], cwd: string, title: string): Promise<boolean> {
-  let ok = true;
-  await vscode.window.withProgress({
-    location: vscode.ProgressLocation.Notification,
-    title,
-  }, async () => {
-    try {
-      await exec(command[0], command.slice(1), { cwd });
-    } catch (err) {
-      ok = false;
-      void vscode.window.showErrorMessage(plain(`${title} failed`, err));
-    }
-  });
-  return ok;
-}
-
 function plain(title: string, err: unknown): string {
-  const stderr = typeof err === "object" && err && "stderr" in err ? String((err as { stderr?: string }).stderr || "") : "";
-  const detail = stderr.trim();
-  if (detail) {
-    return `${title}. ${detail}`;
-  }
   const message = err instanceof Error ? err.message.trim() : "";
   return message ? `${title}. ${message}` : `${title}.`;
 }
@@ -164,8 +218,24 @@ class DecisionView implements vscode.WebviewViewProvider {
   lastHtml = "";
   private view?: vscode.WebviewView;
   private selected?: string;
+  private gap: SetupGap = "runtime";
+  private wantFocus = false;
+  private forceEntry = false;
+  private setupHandler: () => void = () => undefined;
 
   constructor(private rootOf: () => string | undefined) {}
+
+  onSetup(handler: () => void) {
+    this.setupHandler = handler;
+  }
+
+  setGap(gap: SetupGap) {
+    this.gap = gap;
+    if (gap !== "ready") {
+      this.forceEntry = false;
+    }
+    this.refresh();
+  }
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
     this.view = webviewView;
@@ -175,6 +245,12 @@ class DecisionView implements vscode.WebviewViewProvider {
       localResourceRoots: root ? [vscode.Uri.file(root)] : [],
     };
     webviewView.webview.onDidReceiveMessage((message: { type?: string; folder?: string; text?: string }) => {
+      if (message.type === "setup") {
+        this.setupHandler();
+      }
+      if (message.type === "install-python") {
+        void vscode.env.openExternal(vscode.Uri.parse(PYTHON_DOWNLOAD));
+      }
       if (message.type === "open" && message.folder) {
         this.select(message.folder);
       }
@@ -192,23 +268,40 @@ class DecisionView implements vscode.WebviewViewProvider {
 
   select(folder: string) {
     this.selected = folder;
+    this.forceEntry = true;
+    this.refresh();
+  }
+
+  fillWhy(folder: string) {
+    this.selected = folder;
+    this.forceEntry = true;
+    this.wantFocus = true;
     this.refresh();
   }
 
   refresh() {
-    const entries = this.entries();
-    const entry = entries.find((item) => item.folder === this.selected) || entries[0];
-    this.selected = entry?.folder;
-    this.lastHtml = renderPage(entry, entries, (file) => this.src(file));
+    const focus = this.wantFocus;
+    if (this.gap !== "ready" && !this.forceEntry) {
+      this.lastHtml = renderWelcome(this.gap);
+    } else {
+      const entries = this.entries();
+      const entry = entries.find((item) => item.folder === this.selected) || entries[0];
+      this.selected = entry?.folder;
+      this.lastHtml = renderPage(entry, entries, (file) => this.src(file), focus);
+    }
     if (this.view) {
       this.view.webview.html = this.lastHtml;
+      this.wantFocus = false;
     }
   }
 
   standaloneHtml(): string {
+    if (this.gap !== "ready" && !this.forceEntry) {
+      return renderWelcome(this.gap);
+    }
     const entries = this.entries();
     const entry = entries.find((item) => item.folder === this.selected) || entries[0];
-    return renderPage(entry, entries, (file) => path.basename(file));
+    return renderPage(entry, entries, (file) => path.basename(file), this.wantFocus);
   }
 
   private src(file: string): string {

@@ -43,10 +43,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Install decap
-        run: python -m pip install -e .
-      - name: Confirm decap is on PATH
-        run: python -c "import shutil; assert shutil.which('decap'), 'decap missing from PATH'"
       - name: Install test libraries
         run: |
           sudo apt-get update
@@ -62,9 +58,37 @@ jobs:
         run: xvfb-run -a npm test
       - name: Package the vsix
         working-directory: extension
-        run: npx @vscode/vsce package
+        run: npm run package
       - name: Upload the vsix
         uses: actions/upload-artifact@v4
         with:
           name: decap-vsix
           path: extension/*.vsix
+
+  extension-setup:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Confirm decap is not on PATH
+        shell: pwsh
+        run: |
+          if (Get-Command decap -ErrorAction SilentlyContinue) { throw "decap is on PATH" }
+      - name: Install extension dependencies
+        working-directory: extension
+        run: npm ci
+      - name: Bundled setup end to end
+        working-directory: extension
+        run: npm run compile && node scripts/setup-e2e.js
+        env:
+          DECAP_E2E_OUT: e2e-artifacts
+      - name: Upload setup captures
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup-pngs
+          path: extension/e2e-artifacts/*.png

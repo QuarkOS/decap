@@ -7,3 +7,4 @@ tsconfig.json
 out/test/**
 .gitignore
 e2e-artifacts/**
+scripts/**

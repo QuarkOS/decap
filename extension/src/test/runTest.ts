@@ -15,7 +15,11 @@ async function main(): Promise<void> {
   fs.mkdirSync(src);
   fs.writeFileSync(path.join(src, "app.py"), "def total(xs):\n    s = 0\n    return s\n");
   execFileSync("git", ["add", "-A"], { cwd: workspace });
-  execFileSync("git", ["commit", "-m", "start"], { cwd: workspace });
+  const past = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  execFileSync("git", ["commit", "-m", "start"], {
+    cwd: workspace,
+    env: { ...process.env, GIT_AUTHOR_DATE: past, GIT_COMMITTER_DATE: past },
+  });
   fs.writeFileSync(path.join(src, "app.py"), "def total(xs):\n    return sum(xs)\n");
 
   const env: Record<string, string> = { DECAP_TEST: "1" };
