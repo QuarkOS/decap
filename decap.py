@@ -541,17 +541,24 @@ def install_hook(start: Path, decap_bin: Path) -> str:
     return "updated"
 
 
-def decap_executable() -> Path:
-    raw = sys.argv[0]
+def resolve_decap(raw: str, found: str | None) -> Path:
     if os.sep in raw or (os.altsep is not None and os.altsep in raw):
         path = Path(raw)
     else:
-        found = shutil.which("decap")
         path = Path(found) if found else Path(raw)
     path = path.resolve()
-    if not path.exists():
-        raise FileNotFoundError(path)
-    return path
+    if path.exists():
+        return path
+    if path.suffix.lower() != ".exe":
+        exe = Path(str(path) + ".exe")
+        if exe.exists():
+            return exe
+    raise FileNotFoundError(path)
+
+
+def decap_executable() -> Path:
+    found = None if (os.sep in sys.argv[0] or (os.altsep is not None and os.altsep in sys.argv[0])) else shutil.which("decap")
+    return resolve_decap(sys.argv[0], found)
 
 
 def _captured(top: Path) -> frozenset[str]:

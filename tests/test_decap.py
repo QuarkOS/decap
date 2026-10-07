@@ -15,6 +15,7 @@ from decap import (
     hook_line,
     install_hook,
     notify,
+    resolve_decap,
     parse_diff,
     render_png,
     run,
@@ -345,6 +346,15 @@ def test_render_png_is_a_real_image(tmp_path):
         assert image.format == "PNG"
         assert image.width > 80
         assert image.height > 40
+
+
+def test_resolve_decap_appends_exe_when_the_launcher_omits_it(tmp_path):
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    exe = scripts / "decap.exe"
+    exe.write_bytes(b"")
+    found = resolve_decap(str(scripts / "decap"), None)
+    assert found == exe.resolve()
 
 
 def test_hook_line_uses_forward_slashes():
