@@ -78,16 +78,16 @@ export function renderPage(
 <head>
 <meta charset="utf-8">
 <style>
-  body { font-family: sans-serif; color: #1c2834; background: #fff; margin: 0; padding: 12px; }
+  body { font-family: var(--vscode-font-family, sans-serif); color: var(--vscode-foreground); background: transparent; margin: 0; padding: 12px; }
   .list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
-  button.item { text-align: left; padding: 6px 8px; border: 1px solid #d0d7de; background: #fff; color: inherit; cursor: pointer; }
-  button.item.selected { background: #e7eef6; }
-  .pair { display: flex; gap: 12px; align-items: flex-start; }
+  button.item { text-align: left; padding: 6px 8px; border: 1px solid var(--vscode-panel-border, #d0d7de); background: transparent; color: inherit; cursor: pointer; }
+  button.item.selected { background: var(--vscode-list-activeSelectionBackground, #e7eef6); color: var(--vscode-list-activeSelectionForeground, inherit); }
+  .pair { display: flex; flex-direction: column; gap: 12px; align-items: stretch; }
   figure { margin: 0; flex: 1; min-width: 0; }
   figcaption { font-size: 12px; margin-bottom: 4px; }
-  img { max-width: 100%; height: auto; border: 1px solid #d0d7de; background: white; }
+  img { max-width: 100%; height: auto; border: 1px solid var(--vscode-panel-border, #d0d7de); background: white; }
   pre.front { white-space: pre-wrap; font-size: 12px; }
-  textarea { width: 100%; min-height: 80px; box-sizing: border-box; font-family: sans-serif; }
+  textarea { width: 100%; min-height: 80px; box-sizing: border-box; font-family: inherit; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, #888); }
   label { display: block; margin: 8px 0 4px; }
 </style>
 </head>

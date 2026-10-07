@@ -49,6 +49,7 @@ export interface Decision {
   beforeStart: number;
   afterStart: number;
   noteMd: string;
+  ageMs?: number;
 }
 
 type DiffEntry = { type: "hunk"; hunk: TextHunk } | { type: "skip" };
@@ -386,6 +387,7 @@ function decision(hunk: TextHunk, key: string, age: number | undefined, commit: 
     beforeStart: shaped.beforeStart,
     afterStart: shaped.afterStart,
     noteMd,
+    ageMs: age,
   };
 }
 
