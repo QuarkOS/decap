@@ -2,7 +2,7 @@
   "name": "decap",
   "displayName": "decap",
   "description": "Captures a before and after image when a commit changes an old line.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "quarkos",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -39,6 +39,14 @@
       {
         "command": "decap.openDecisions",
         "title": "decap: Open decisions"
+      },
+      {
+        "command": "decap.showLog",
+        "title": "decap: Show log"
+      },
+      {
+        "command": "decap.fillWhy",
+        "title": "decap: Fill in why"
       }
     ],
     "keybindings": [

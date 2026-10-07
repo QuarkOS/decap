@@ -12,20 +12,28 @@ interface GitResult {
   stderr: string;
 }
 
+let gitPath = "git";
+
+export function setGitPath(value: string | undefined) {
+  if (value) {
+    gitPath = value;
+  }
+}
+
 function git(root: string, args: string[]): GitResult {
   try {
-    const stdout = execFileSync("git", ["-c", "color.ui=never", "-C", root, ...args], {
+    const stdout = execFileSync(gitPath, ["-c", "color.ui=never", "-C", root, ...args], {
       encoding: "utf8",
       maxBuffer: 20 * 1024 * 1024,
       windowsHide: true,
     });
     return { code: 0, stdout, stderr: "" };
   } catch (err) {
-    const failed = err as { status?: number; stdout?: string; stderr?: string };
+    const failed = err as { status?: number; stdout?: string; stderr?: string; code?: string; message?: string };
     return {
       code: failed.status ?? 1,
       stdout: String(failed.stdout ?? ""),
-      stderr: String(failed.stderr ?? ""),
+      stderr: String(failed.stderr ?? (failed.code ? `${failed.code}: ${failed.message ?? ""}` : "")),
     };
   }
 }
@@ -48,12 +56,23 @@ function revExists(root: string, rev: string): boolean {
 }
 
 export function commitIsFresh(root: string, now = new Date()): boolean {
+  return commitFreshness(root, now).fresh;
+}
+
+export function commitFreshness(root: string, now = new Date()): { fresh: boolean; detail: string } {
   const result = git(root, ["show", "-s", "--format=%ct", "HEAD"]);
   if (result.code !== 0) {
-    return false;
+    return { fresh: false, detail: `git failed: ${result.stderr.trim() || "unknown error"}` };
   }
   const stamp = Number(result.stdout.trim());
-  return Number.isFinite(stamp) && now.getTime() / 1000 - stamp < FRESH_COMMIT_SECONDS;
+  if (!Number.isFinite(stamp)) {
+    return { fresh: false, detail: "HEAD has no committer time" };
+  }
+  const age = Math.round(now.getTime() / 1000 - stamp);
+  if (age >= FRESH_COMMIT_SECONDS) {
+    return { fresh: false, detail: `HEAD was committed ${age}s ago (older than ${FRESH_COMMIT_SECONDS}s), so it is not a new commit` };
+  }
+  return { fresh: true, detail: `committed ${age}s ago` };
 }
 
 function minAgeMs(root: string): number {
@@ -158,20 +177,41 @@ async function publish(decision: Decision, root: string, now: Date, fontFile: st
   return dest;
 }
 
+export interface CaptureResult {
+  root: string;
+  commit: string;
+  written: string[];
+  skipped?: "merge" | "first" | "no-text" | "added-only" | "captured" | "young";
+  minAgeHours?: number;
+  oldestMs?: number;
+}
+
 export async function capture(input: {
   start: string;
   source: "commit" | "worktree";
   fontFile: string;
   now?: Date;
 }): Promise<string[]> {
+  return (await captureDetailed(input)).written;
+}
+
+export async function captureDetailed(input: {
+  start: string;
+  source: "commit" | "worktree";
+  fontFile: string;
+  now?: Date;
+}): Promise<CaptureResult> {
   const now = input.now ?? new Date();
   const root = toplevel(input.start);
   let revs: string[];
   let minAge: number | undefined;
   let commit: string;
   if (input.source === "commit") {
-    if (revExists(root, "HEAD^2") || !revExists(root, "HEAD^")) {
-      return [];
+    if (revExists(root, "HEAD^2")) {
+      return { root, commit: "HEAD", written: [], skipped: "merge" };
+    }
+    if (!revExists(root, "HEAD^")) {
+      return { root, commit: "HEAD", written: [], skipped: "first" };
     }
     revs = ["HEAD^", "HEAD"];
     minAge = minAgeMs(root);
@@ -183,9 +223,8 @@ export async function capture(input: {
   }
   const blameRev = input.source === "commit" ? "HEAD^" : "HEAD";
   const cache = new Map<string, Map<number, number>>();
-  const chosen = selectDecisions({
-    entries: parseDiff(diff(root, revs)),
-    blameOf: (filePath) => {
+  const entries = parseDiff(diff(root, revs));
+  const blameOf = (filePath: string) => {
       const cached = cache.get(filePath);
       if (cached) {
         return cached;
@@ -194,16 +233,38 @@ export async function capture(input: {
       const parsed = parseBlame(result.code === 0 ? result.stdout : "");
       cache.set(filePath, parsed);
       return parsed;
-    },
-    source: input.source,
-    commit,
-    minAgeMs: minAge,
-    captured: capturedKeys(root),
-    now,
+  };
+  const select = (minAgeMs: number | undefined, captured: Set<string>) => selectDecisions({
+    entries, blameOf, source: input.source, commit, minAgeMs, captured, now,
   });
+  const chosen = select(minAge, capturedKeys(root));
   const written: string[] = [];
   for (const decision of chosen) {
     written.push(await publish(decision, root, now, input.fontFile));
   }
-  return written;
+  const result: CaptureResult = {
+    root,
+    commit,
+    written,
+    minAgeHours: minAge === undefined ? undefined : minAge / 3600000,
+  };
+  if (written.length > 0) {
+    return result;
+  }
+  const hunks = entries.filter((entry) => entry.type === "hunk");
+  if (hunks.length === 0) {
+    return { ...result, skipped: "no-text" };
+  }
+  if (!hunks.some((entry) => entry.type === "hunk" && entry.hunk.lines.some((line) => line.kind === "removed"))) {
+    return { ...result, skipped: "added-only" };
+  }
+  if (select(minAge, new Set()).length > 0) {
+    return { ...result, skipped: "captured" };
+  }
+  const any = select(0, new Set());
+  if (any.length === 0) {
+    return { ...result, skipped: "no-text" };
+  }
+  const oldest = Math.max(...any.map((item) => item.ageMs ?? 0));
+  return { ...result, skipped: "young", oldestMs: oldest };
 }
