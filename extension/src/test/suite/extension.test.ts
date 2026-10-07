@@ -235,9 +235,13 @@ suite("decap extension", () => {
     const before = exported.entries().length;
     fs.writeFileSync(path.join(root(), "src", "app.py"), "def total(xs):\n    return sum(xs) + 2\n");
     await vscode.commands.executeCommand("decap.snap");
-    await waitFor(() => exported.entries().length === before + 1, "a snap");
-    const entry = exported.entries()[0];
-    assert.ok(entry.note.includes("commit: uncommitted"), entry.note);
+    await waitFor(
+      () => exported.entries().some((entry) => entry.note.includes("commit: uncommitted")),
+      "a snap",
+    );
+    const entry = exported.entries().find((item) => item.note.includes("commit: uncommitted"));
+    assert.ok(entry);
+    assert.strictEqual(exported.entries().length, before + 1);
     assert.ok(fs.statSync(entry.before).size > 500);
     assert.ok(fs.statSync(entry.after).size > 500);
   });
