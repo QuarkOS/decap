@@ -1,7 +1,7 @@
 {
   "name": "decap",
   "displayName": "decap",
-  "description": "Guided setup and a sidebar for decap decision captures.",
+  "description": "Captures a before and after image when a commit changes an old line.",
   "version": "0.1.1",
   "publisher": "quarkos",
   "license": "MIT",
@@ -13,23 +13,28 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Visualization", "Other"],
-  "keywords": ["git", "diff", "decisions", "snapshot", "hook"],
-  "activationEvents": ["onStartupFinished"],
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "git",
+    "diff",
+    "decisions",
+    "snapshot"
+  ],
+  "extensionDependencies": [
+    "vscode.git"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "decap.snap",
         "title": "decap: Snap"
-      },
-      {
-        "command": "decap.installHook",
-        "title": "decap: Install hook"
-      },
-      {
-        "command": "decap.setup",
-        "title": "decap: Set up"
       },
       {
         "command": "decap.openDecisions",
@@ -63,9 +68,9 @@
     }
   },
   "scripts": {
-    "compile": "node scripts/bundle-cli.js && tsc -p ./",
+    "compile": "tsc -p ./",
     "test": "npm run compile && node ./out/test/runTest.js",
-    "package": "npm run compile && vsce package"
+    "package": "npm run compile && esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js --format=cjs && vsce package"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.7",
@@ -73,7 +78,12 @@
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.28.2",
     "mocha": "^10.7.3",
     "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "highlight.js": "^11.12.0",
+    "pureimage": "^0.4.20"
   }
 }

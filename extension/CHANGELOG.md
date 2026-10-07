@@ -2,7 +2,7 @@
 
 ## 0.1.1
 
-Setup no longer asks pip or pipx to install decap, and it never uses the private git URL or the PyPI name. The extension keeps its own Python environment and a bundled copy of the CLI. A status bar item and the sidebar stay visible until that environment and the post-commit hook are ready. A new capture offers Fill in why, which opens that note with the Why box focused.
+The editor captures by itself. Installing the extension is the whole setup. It watches new commits while the window is open, writes the same `.decisions` folders as the command-line tool, and does not need Python or a git hook. A new capture offers Fill in why. Commits made while the editor is closed are not captured. The command-line tool and its hook remain available for terminal-only use.
 
 ## 0.1.0
 

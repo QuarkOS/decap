@@ -1,6 +1,9 @@
 .vscode/**
 src/**
 node_modules/**
+bundled/**
+out/**
+!out/extension.js
 **/*.map
 **/*.ts
 tsconfig.json
