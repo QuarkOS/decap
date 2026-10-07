@@ -26,6 +26,49 @@ The hook captures a commit that changes or deletes a line last touched at least 
 
 decap writes `.decisions/<date>_<time>_<slug>/` with `before.png`, `after.png`, and `note.md`. Fill in the `Why:` line.
 
-A notification names the folder when `notify-send` is installed. A missing `notify-send` is skipped.
+On Linux, a notification names the folder when `notify-send` is installed. A missing `notify-send` is skipped. On Windows, decap shows a toast. If the toast cannot be shown, the commit still succeeds and the message is skipped.
+
+## Windows
+
+Install Python 3.11 or newer and Git for Windows. Install decap with pipx or with pip.
+
+```
+pipx install .
+```
+
+```
+python -m pip install --user .
+```
+
+`decap install` writes a post-commit hook. Git for Windows runs that hook in its bash. The hook path uses forward slashes so `decap.exe` starts.
+
+A CRLF file is not a change when the text matches the last commit. Images use DejaVu Sans Mono when that font is installed, and Consolas when it is not.
+
+## Editor
+
+The `extension` folder is a VS Code extension. Cursor loads the same package. This repository does not publish it.
+
+From `extension`, install the dependencies and build the package.
+
+```
+npm install
+npx @vscode/vsce package --allow-missing-repository
+```
+
+That writes `decap-0.1.0.vsix`.
+
+In VS Code, open Extensions and choose Install from VSIX. From a terminal, run `code --install-extension decap-0.1.0.vsix`.
+
+In Cursor, use the same Install from VSIX action, or run `cursor --install-extension decap-0.1.0.vsix`.
+
+Open a git repository. If the decap command is missing, the extension offers to install it. The prompt names the pipx or pip command before anything runs, then shows progress. Errors stay in plain words. If pipx and pip are both missing, the prompt says so. If the hook is missing, the extension offers to run `decap install`.
+
+`decap: Snap` captures the working tree. The default key is Alt+Shift+S. `decap: Install hook` writes the hook. `decap: Open decisions` focuses the sidebar.
+
+The sidebar lists `.decisions` folders, newest first. Each entry shows the before image and the after image side by side, plus the note. Edit the Why box and leave the field to save `note.md`.
+
+A new capture shows a notification in the editor.
+
+Publishing to the Marketplace needs a publisher and a personal access token, then `vsce publish`. Publishing to Open VSX needs an access token, then `npx ovsx publish`.
 
 The plan is in [PLAN.md](PLAN.md).
