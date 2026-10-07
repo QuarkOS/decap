@@ -3,7 +3,9 @@
   "displayName": "decap",
   "description": "Guided setup and a sidebar for decap decision captures.",
   "version": "0.1.0",
-  "publisher": "decap",
+  "publisher": "quarkos",
+  "license": "MIT",
+  "icon": "media/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/QuarkOS/decap.git"
@@ -11,7 +13,8 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
+  "categories": ["Visualization", "Other"],
+  "keywords": ["git", "diff", "decisions", "snapshot", "hook"],
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
@@ -62,7 +65,7 @@
   "scripts": {
     "compile": "tsc -p ./",
     "test": "npm run compile && node ./out/test/runTest.js",
-    "package": "vsce package --allow-missing-repository"
+    "package": "vsce package"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.7",

@@ -46,16 +46,16 @@ A CRLF file is not a change when the text matches the last commit. Images use De
 
 ## Editor
 
-The `extension` folder is a VS Code extension. Cursor loads the same package. This repository does not publish it.
+The `extension` folder is a VS Code extension. Cursor loads the same package. The Open VSX namespace is `quarkos`. This repository does not publish the package.
 
 From `extension`, install the dependencies and build the package.
 
 ```
 npm install
-npx @vscode/vsce package --allow-missing-repository
+npx @vscode/vsce package
 ```
 
-That writes `decap-0.1.0.vsix`.
+That writes `decap-0.1.0.vsix`. The CI artifact is the same file.
 
 In VS Code, open Extensions and choose Install from VSIX. From a terminal, run `code --install-extension decap-0.1.0.vsix`.
 
@@ -69,6 +69,6 @@ The sidebar lists `.decisions` folders, newest first. Each entry shows the befor
 
 A new capture shows a notification in the editor.
 
-Publishing to the Marketplace needs a publisher and a personal access token, then `vsce publish`. Publishing to Open VSX needs an access token, then `npx ovsx publish`.
+To publish on Open VSX, download the CI vsix and run `npx ovsx publish decap-0.1.0.vsix` with your own token. The Marketplace is a separate publisher account and `vsce publish`. This repository has no publish workflow and no publish token.
 
 The plan is in [PLAN.md](PLAN.md).

@@ -6,3 +6,4 @@ node_modules/**
 tsconfig.json
 out/test/**
 .gitignore
+e2e-artifacts/**
