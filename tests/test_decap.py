@@ -11,7 +11,10 @@ from decap import (
     NewFile,
     ShotLine,
     TextHunk,
+    find_font,
+    hook_line,
     install_hook,
+    notify,
     parse_diff,
     render_png,
     run,
@@ -54,6 +57,13 @@ def git_repo(tmp_path: Path) -> Path:
     )
     subprocess.run(
         ["git", "config", "user.name", "Dev"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "core.autocrlf", "false"],
         cwd=repo,
         check=True,
         capture_output=True,
@@ -187,7 +197,7 @@ def test_note_and_age_gate():
 def test_install_hook_keeps_existing_hook(tmp_path):
     repo = git_repo(tmp_path)
     hook = repo / ".git" / "hooks" / "post-commit"
-    hook.write_text("#!/bin/sh\necho hello\n")
+    hook.write_text("#!/bin/sh\necho hello\n", newline="\n")
     hook.chmod(0o755)
     assert install_hook(repo, Path("/usr/bin/decap")) == "appended"
     text = hook.read_text()
@@ -202,7 +212,7 @@ def test_install_hook_keeps_existing_hook(tmp_path):
 def _app(repo: Path, text: str) -> None:
     path = repo / "src" / "app.py"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, newline="\n")
 
 
 def test_old_line_commit_writes_pngs(tmp_path):
@@ -335,3 +345,55 @@ def test_render_png_is_a_real_image(tmp_path):
         assert image.format == "PNG"
         assert image.width > 80
         assert image.height > 40
+
+
+def test_hook_line_uses_forward_slashes():
+    plain = hook_line(Path("C:\\Users\\Ada\\decap.exe"))
+    assert plain == "C:/Users/Ada/decap.exe hook || true"
+    quoted = hook_line(Path("C:\\Users\\Ada Smith\\decap.exe"))
+    assert quoted == "'C:/Users/Ada Smith/decap.exe' hook || true"
+
+
+def test_parse_diff_drops_carriage_returns():
+    text = ONE_HUNK.replace("\n", "\r\n")
+    entries = parse_diff(text)
+    assert entries == parse_diff(ONE_HUNK)
+
+
+def test_crlf_rewrite_is_not_a_capture(tmp_path):
+    repo = git_repo(tmp_path)
+    subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=repo, check=True)
+    _app(repo, "keep\nold\ntail\n")
+    commit(repo, 1, "start")
+    (repo / "src" / "app.py").write_bytes(b"keep\r\nold\r\ntail\r\n")
+    assert run(repo, "worktree") == ()
+
+
+def test_find_font_prefers_dejavu_then_consolas(tmp_path):
+    fonts = tmp_path / "Fonts"
+    fonts.mkdir()
+    (fonts / "consola.ttf").write_bytes(b"consolas")
+    assert find_font((str(fonts),)) == str(fonts / "consola.ttf")
+    share = tmp_path / "share"
+    share.mkdir()
+    (share / "DejaVuSansMono.ttf").write_bytes(b"dejavu")
+    assert find_font((str(fonts), str(share))) == str(share / "DejaVuSansMono.ttf")
+
+
+def test_notify_on_linux_skips_a_missing_notify_send(monkeypatch, tmp_path):
+    monkeypatch.setattr("decap.os.name", "posix")
+    monkeypatch.setattr("decap.shutil.which", lambda _name: None)
+    called = []
+    monkeypatch.setattr("decap.subprocess.run", lambda *args, **_kwargs: called.append(args))
+    notify((tmp_path,))
+    assert called == []
+
+
+def test_notify_on_windows_uses_powershell_or_skips(monkeypatch, tmp_path):
+    monkeypatch.setattr("decap.os.name", "nt")
+    monkeypatch.setattr("decap.shutil.which", lambda name: "powershell.exe" if name == "powershell" else None)
+    called = []
+    monkeypatch.setattr("decap.subprocess.run", lambda *args, **_kwargs: called.append(args[0]))
+    notify((tmp_path,))
+    assert called[0][:4] == ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
+    assert "notify-send" not in called[0]
