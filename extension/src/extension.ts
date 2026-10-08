@@ -6,7 +6,7 @@ import { watchCommits } from "./git";
 import { applyWhy, fileMeta, fileTitle, parseNote } from "./note";
 import { renderSaved, renderWhyPanel } from "./panel";
 import { ageLabel } from "./rules";
-import { listDecisions, renderPage } from "./view";
+import { decisionRow, listDecisions, renderPage, rowMatches } from "./view";
 
 export function capturePrompt(name: string): { message: string; action: string } {
   return { message: `decap saved ${name}`, action: "Fill in why" };
@@ -441,6 +441,7 @@ export async function activate(context: vscode.ExtensionContext) {
     panelMessage: (message: { type?: string; text?: string }) => onWhyMessage(message),
     openNote: (notePath: string) => openNoteAsText(vscode.Uri.file(notePath)),
     refresh: () => view.refresh(),
+    search: (text: string) => view.search(text),
   };
 }
 
@@ -462,6 +463,8 @@ class DecisionView implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private selected?: string;
   private wantFocus = false;
+  private query = "";
+  private focusSearch = false;
 
   constructor(private rootOf: () => string | undefined, private onWhy: (folder: string, text: string) => void = () => undefined) {}
 
@@ -478,6 +481,9 @@ class DecisionView implements vscode.WebviewViewProvider {
       }
       if (message.type === "why" && message.folder) {
         this.saveWhy(message.folder, message.text || "");
+      }
+      if (message.type === "search") {
+        this.search(message.text || "");
       }
     });
     this.refresh();
@@ -499,12 +505,18 @@ class DecisionView implements vscode.WebviewViewProvider {
     this.refresh();
   }
 
+  search(text: string) {
+    this.query = text;
+    this.focusSearch = text.trim() !== "";
+    this.wantFocus = false;
+    this.refresh();
+  }
+
   refresh() {
     const focus = this.wantFocus;
-    const entries = this.entries();
-    const entry = entries.find((item) => item.folder === this.selected) || entries[0];
-    this.selected = entry?.folder;
-    this.lastHtml = renderPage(entry, entries, (file) => this.src(file), focus);
+    const shown = this.shown();
+    this.selected = shown.entry?.folder;
+    this.lastHtml = renderPage(shown.entry, shown.visible, (file) => this.src(file), focus, this.query, this.focusSearch, shown.total);
     if (this.view) {
       this.view.webview.options = { enableScripts: true, localResourceRoots: resourceRoots(this.rootOf()) };
       this.view.webview.html = this.lastHtml;
@@ -513,9 +525,15 @@ class DecisionView implements vscode.WebviewViewProvider {
   }
 
   standaloneHtml(): string {
+    const shown = this.shown();
+    return renderPage(shown.entry, shown.visible, (file) => path.basename(file), this.wantFocus, this.query, this.focusSearch, shown.total);
+  }
+
+  private shown() {
     const entries = this.entries();
-    const entry = entries.find((item) => item.folder === this.selected) || entries[0];
-    return renderPage(entry, entries, (file) => path.basename(file), this.wantFocus);
+    const visible = entries.filter((item) => rowMatches(decisionRow(item), this.query));
+    const entry = visible.find((item) => item.folder === this.selected) || visible[0];
+    return { visible, entry, total: entries.length };
   }
 
   private src(file: string): string {
