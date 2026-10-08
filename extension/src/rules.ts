@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { renderNote } from "./note";
 
 export const MAX_LINES = 60;
 export const MAX_COLUMNS = 120;
@@ -375,7 +376,15 @@ function decision(hunk: TextHunk, key: string, age: number | undefined, commit: 
   const label = ageLabel(age);
   const slugBody = hunk.path.replace(/[^A-Za-z0-9._-]/g, "_");
   const noteSpan = shaped.beforeSpan || shaped.afterSpan;
-  const noteMd = `---\ncommit: ${commit}\nfile: ${hunk.path}\nlines: ${noteSpan}\nage: ${label}\nchange: ${key}\n---\n\nWhy:\n`;
+  const noteMd = renderNote({
+    format: "readable",
+    commit,
+    file: hunk.path,
+    lines: noteSpan,
+    age: label,
+    change: key,
+    why: "",
+  });
   return {
     key,
     slug: `${slugBody}_${hunk.oldStart}`.slice(0, 60),

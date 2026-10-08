@@ -327,10 +327,7 @@ def _decision(hunk: TextHunk, key: str, age: timedelta | None, commit: str) -> D
     label = _age_label(age)
     slug = re.sub(r"[^A-Za-z0-9._-]", "_", hunk.path)
     note_span = before_span or after_span
-    note = (
-        f"---\ncommit: {commit}\nfile: {hunk.path}\nlines: {note_span}\n"
-        f"age: {label}\nchange: {key}\n---\n\nWhy:\n"
-    )
+    note = _render_note(commit, hunk.path, note_span, label, key)
     return Decision(
         key=key,
         slug=f"{slug}_{hunk.old_start}"[:60],
@@ -577,15 +574,40 @@ def _captured(top: Path) -> frozenset[str]:
     return frozenset(keys)
 
 
+def _render_note(commit: str, file: str, lines: str, age: str, change: str) -> str:
+    title = f"# {file} lines {lines}" if lines else f"# {file}"
+    return (
+        f"{title}\n\n"
+        "![before](before.png)\n"
+        "![after](after.png)\n\n"
+        "<!-- decap\n"
+        f"commit: {commit}\n"
+        f"file: {file}\n"
+        f"lines: {lines}\n"
+        f"age: {age}\n"
+        f"change: {change}\n"
+        "-->\n"
+    )
+
+
 def _note_key(text: str) -> str | None:
-    if not text.startswith("---\n"):
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    block = None
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 3)
+        if end >= 0:
+            block = text[4:end]
+    else:
+        start = text.find("<!-- decap\n")
+        end = text.find("\n-->", start + 11) if start >= 0 else -1
+        if start >= 0 and end >= 0:
+            block = text[start + len("<!-- decap\n"):end]
+    if block is None:
         return None
-    end = text.find("\n---\n", 3)
-    if end < 0:
-        return None
-    for line in text[4:end].split("\n"):
+    for line in block.split("\n"):
         if line.startswith("change:"):
-            return line.split(":", 1)[1].strip()
+            value = line.split(":", 1)[1].strip()
+            return value or None
     return None
 
 

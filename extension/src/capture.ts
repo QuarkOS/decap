@@ -2,6 +2,7 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { renderPng } from "./render";
+import { noteKey } from "./note";
 import { Decision, DEFAULT_MIN_AGE_MS, parseBlame, parseDiff, selectDecisions } from "./rules";
 
 const FRESH_COMMIT_SECONDS = 180;
@@ -117,22 +118,6 @@ function capturedKeys(root: string): Set<string> {
     }
   }
   return keys;
-}
-
-function noteKey(text: string): string | undefined {
-  if (!text.startsWith("---\n")) {
-    return undefined;
-  }
-  const end = text.indexOf("\n---\n", 3);
-  if (end < 0) {
-    return undefined;
-  }
-  for (const line of text.slice(4, end).split("\n")) {
-    if (line.startsWith("change:")) {
-      return line.split(":").slice(1).join(":").trim();
-    }
-  }
-  return undefined;
 }
 
 function stamp(now: Date): string {

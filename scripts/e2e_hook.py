@@ -64,7 +64,7 @@ def main() -> int:
             print(f"png too small: {image} {len(data)}", file=sys.stderr)
             return 1
     note = notes[0].read_text(encoding="utf-8")
-    if "Why:" not in note.splitlines() or "file: src/app.py" not in note.splitlines():
+    if not note.startswith("# src/app.py") or "![before](before.png)" not in note.splitlines() or "file: src/app.py" not in note.splitlines():
         print(note, file=sys.stderr)
         return 1
     before = len(notes)

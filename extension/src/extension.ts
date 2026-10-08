@@ -2,9 +2,11 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { capture, captureDetailed, CaptureResult, commitFreshness, setGitPath } from "./capture";
-import { ageLabel } from "./rules";
 import { watchCommits } from "./git";
-import { joinWhy, listDecisions, renderPage, splitWhy } from "./view";
+import { applyWhy, fileMeta, fileTitle, parseNote } from "./note";
+import { renderSaved, renderWhyPanel } from "./panel";
+import { ageLabel } from "./rules";
+import { listDecisions, renderPage } from "./view";
 
 export function capturePrompt(name: string): { message: string; action: string } {
   return { message: `decap saved ${name}`, action: "Fill in why" };
@@ -42,7 +44,7 @@ export async function activate(context: vscode.ExtensionContext) {
   log(`decap ${context.extension.packageJSON.version} active in ${workspaceRoot() ?? "a window with no folder"}`);
   const fontFile = path.join(context.extensionPath, "media", "DejaVuSansMono.ttf");
   let viewRoot: string | undefined;
-  const view = new DecisionView(() => viewRoot ?? workspaceRoot(), () => updatePending());
+  const view = new DecisionView(() => viewRoot ?? workspaceRoot(), (folder, text) => writeWhy(folder, text, "sidebar"));
   const announced = new Set<string>();
   const primed = new Set<string>();
   const pending: string[] = [];
@@ -69,7 +71,7 @@ export async function activate(context: vscode.ExtensionContext) {
     for (let i = pending.length - 1; i >= 0; i--) {
       const notePath = path.join(pending[i], "note.md");
       const note = fs.existsSync(notePath) ? fs.readFileSync(notePath, "utf8").replace(/\r\n/g, "\n") : "";
-      if (!note || splitWhy(note).why.trim() !== "") {
+      if (!note || parseNote(note).why.trim() !== "") {
         pending.splice(i, 1);
       }
     }
@@ -164,6 +166,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("decap.snap", () => snap()),
     vscode.commands.registerCommand("decap.showLog", () => output.show(true)),
     vscode.commands.registerCommand("decap.fillWhy", () => (pending[0] ? fillWhy(pending[0]) : undefined)),
+    vscode.commands.registerCommand("decap.openNote", (uri: vscode.Uri) => openNoteAsText(uri)),
     vscode.commands.registerCommand("decap.openDecisions", async () => {
       await vscode.commands.executeCommand("decap.decisions.focus");
       view.refresh();
@@ -176,19 +179,98 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  async function fillWhy(folder: string) {
-    viewRoot = path.dirname(path.dirname(folder));
+  function showWhy(folder: string, banner?: string) {
     view.select(folder);
     const notePath = path.join(folder, "note.md");
-    if (process.env.DECAP_TEST === "1" || !fs.existsSync(notePath)) {
-      view.fillWhy(folder);
+    if (!fs.existsSync(notePath)) {
       return;
     }
-    const doc = await vscode.workspace.openTextDocument(notePath);
-    const editor = await vscode.window.showTextDocument(doc, { preview: false });
-    const end = doc.lineAt(doc.lineCount - 1).range.end;
-    editor.selection = new vscode.Selection(end, end);
-    editor.revealRange(new vscode.Range(end, end));
+    const parsed = parseNote(fs.readFileSync(notePath, "utf8"));
+    const title = fileTitle(parsed);
+    if (!whyPanel) {
+      whyPanel = vscode.window.createWebviewPanel("decap.why", title, vscode.ViewColumn.Active, {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: resourceRoots(folder),
+      });
+      context.subscriptions.push(whyPanel);
+      whyPanel.onDidDispose(() => {
+        whyPanel = undefined;
+        whyFolder = undefined;
+        if (whyClose) {
+          clearTimeout(whyClose);
+          whyClose = undefined;
+        }
+      });
+      whyPanel.webview.onDidReceiveMessage((message: { type?: string; text?: string }) => onWhyMessage(message));
+    }
+    whyFolder = folder;
+    whyPanel.title = title;
+    whyPanel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: resourceRoots(folder),
+    };
+    const html = renderWhyPanel({
+      title,
+      meta: fileMeta(parsed),
+      beforeSrc: whyPanel.webview.asWebviewUri(vscode.Uri.file(path.join(folder, "before.png"))).toString(),
+      afterSrc: whyPanel.webview.asWebviewUri(vscode.Uri.file(path.join(folder, "after.png"))).toString(),
+      why: parsed.why,
+      banner,
+      cspSource: whyPanel.webview.cspSource,
+    });
+    whyHtml = html;
+    whyPanel.webview.html = html;
+    whyPanel.reveal(vscode.ViewColumn.Active);
+  }
+
+  function onWhyMessage(message: { type?: string; text?: string }) {
+    if (!whyFolder || !whyPanel) {
+      return;
+    }
+    if (message.type === "dismiss") {
+      whyPanel.dispose();
+      return;
+    }
+    if (message.type !== "save") {
+      return;
+    }
+    const folder = whyFolder;
+    writeWhy(folder, message.text || "", "panel");
+    if (pending.length === 0) {
+      const html = renderSaved(whyPanel.webview.cspSource);
+      whyHtml = html;
+      whyPanel.webview.html = html;
+      if (process.env.DECAP_TEST === "1") {
+        return;
+      }
+      if (whyClose) {
+        clearTimeout(whyClose);
+      }
+      const closing = whyPanel;
+      whyClose = setTimeout(() => closing.dispose(), 700);
+      return;
+    }
+    showWhy(pending[0], `Saved. ${pending.length} more to fill in.`);
+  }
+
+  function fillWhy(folder: string) {
+    viewRoot = path.dirname(path.dirname(folder));
+    showWhy(folder);
+  }
+
+  function writeWhy(folder: string, text: string, source: "panel" | "sidebar") {
+    const notePath = path.join(folder, "note.md");
+    if (!fs.existsSync(notePath)) {
+      return;
+    }
+    const note = fs.readFileSync(notePath, "utf8");
+    fs.writeFileSync(notePath, applyWhy(note, text), "utf8");
+    view.refresh();
+    updatePending();
+    if (source === "sidebar" && whyPanel && whyFolder === folder) {
+      showWhy(folder);
+    }
   }
 
   async function snap() {
@@ -225,7 +307,10 @@ export async function activate(context: vscode.ExtensionContext) {
     entries: () => view.entries(),
     lastHtml: () => view.lastHtml,
     standaloneHtml: () => view.standaloneHtml(),
-    fillWhy: (folder: string) => { void fillWhy(folder); },
+    fillWhy: (folder: string) => fillWhy(folder),
+    panelHtml: () => whyHtml,
+    panelMessage: (message: { type?: string; text?: string }) => onWhyMessage(message),
+    openNote: (notePath: string) => openNoteAsText(vscode.Uri.file(notePath)),
     refresh: () => view.refresh(),
   };
 }
@@ -249,7 +334,7 @@ class DecisionView implements vscode.WebviewViewProvider {
   private selected?: string;
   private wantFocus = false;
 
-  constructor(private rootOf: () => string | undefined, private onSaved: () => void = () => undefined) {}
+  constructor(private rootOf: () => string | undefined, private onWhy: (folder: string, text: string) => void = () => undefined) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
     this.view = webviewView;
@@ -312,14 +397,21 @@ class DecisionView implements vscode.WebviewViewProvider {
   }
 
   private saveWhy(folder: string, text: string) {
-    const notePath = path.join(folder, "note.md");
-    if (!fs.existsSync(notePath)) {
-      return;
-    }
-    const note = fs.readFileSync(notePath, "utf8").replace(/\r\n/g, "\n");
-    const { front } = splitWhy(note);
-    fs.writeFileSync(notePath, joinWhy(front, text), "utf8");
-    this.onSaved();
+    this.onWhy(folder, text);
+  }
+}
+
+let whyPanel: vscode.WebviewPanel | undefined;
+let whyFolder: string | undefined;
+let whyHtml = "";
+let whyClose: ReturnType<typeof setTimeout> | undefined;
+
+async function openNoteAsText(uri: vscode.Uri): Promise<void> {
+  try {
+    await vscode.commands.executeCommand("vscode.openWith", uri, "default", { preview: false });
+  } catch {
+    const doc = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(doc, { preview: false });
   }
 }
 

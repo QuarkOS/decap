@@ -5,6 +5,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { decodePNGFromStream } from "pureimage";
 import * as vscode from "vscode";
+import { applyWhy, noteKey, parseNote, renderNote } from "../../note";
+import { WHY_PLACEHOLDER } from "../../panel";
 import { changeKey, TextHunk } from "../../rules";
 
 const APP_KEY = "2dd27812f1692903";
@@ -23,6 +25,9 @@ interface Api {
   lastHtml: () => string;
   standaloneHtml: () => string;
   fillWhy: (folder: string) => void;
+  panelHtml: () => string;
+  panelMessage: (message: { type?: string; text?: string }) => void;
+  openNote: (notePath: string) => Promise<void>;
   refresh: () => void;
 }
 
@@ -51,6 +56,20 @@ async function waitFor(read: () => boolean, label: string, timeoutMs = 20000): P
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw new Error(`timed out waiting for ${label}`);
+}
+
+function samePath(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function pendingCount(text: string): number {
+  const match = text.match(/\((\d+)\)/);
+  if (match) {
+    return Number(match[1]);
+  }
+  return text.includes("fill in why") ? 1 : 0;
 }
 
 function inside(child: string, parent: string): boolean {
@@ -96,11 +115,36 @@ suite("decap extension", () => {
       assert.ok(html.includes('alt="before"'), html);
       assert.ok(html.includes('alt="after"'), html);
       assert.ok(html.includes("src/app.py"), html);
-      assert.ok(html.includes("autofocus"), html);
+      const panel = exported.panelHtml();
+      assert.ok(panel.includes(WHY_PLACEHOLDER), panel);
+      assert.ok(panel.includes("autofocus"), panel);
+      assert.ok(panel.includes('alt="before"'), panel);
+      assert.ok(!entry.note.startsWith("---"));
       assert.ok(exported.pendingText().includes("decap: fill in why"), exported.pendingText());
     });
     return;
   }
+
+  test("reads a legacy note and writes a readable one", () => {
+    const legacy = "---\ncommit: abc123\nfile: src/app.py\nlines: 10-12\nage: 2 days\nchange: abcdef\n---\n\nWhy:\nbecause\n";
+    const parsed = parseNote(legacy);
+    assert.strictEqual(parsed.format, "legacy");
+    assert.strictEqual(parsed.why, "because");
+    assert.strictEqual(noteKey(legacy), "abcdef");
+    const readable = renderNote({ ...parsed, format: "readable", why: "" });
+    assert.ok(readable.startsWith("# src/app.py lines 10-12\n"), readable);
+    assert.strictEqual(readable.startsWith("---"), false);
+    assert.ok(readable.includes("![before](before.png)"));
+    assert.ok(readable.includes("![after](after.png)"));
+    assert.strictEqual(noteKey(readable), "abcdef");
+    const saved = applyWhy(readable, "The sum was wrong.");
+    assert.ok(saved.includes("The sum was wrong."));
+    assert.strictEqual(saved.split("<!--")[0].includes("change:"), false);
+    const kept = applyWhy(legacy, "still legacy");
+    assert.ok(kept.startsWith("---\n"));
+    assert.strictEqual(parseNote(kept).why, "still legacy");
+    assert.strictEqual(noteKey(kept), "abcdef");
+  });
 
   test("the change hash matches the command line tool", () => {
     const app: TextHunk = {
@@ -155,7 +199,10 @@ suite("decap extension", () => {
     const entry = exported.entries()[0];
     assert.ok(entry.note.includes(`change: ${APP_KEY}`), entry.note);
     assert.ok(entry.note.includes("file: src/app.py"), entry.note);
-    assert.ok(entry.note.includes("Why:\n"), entry.note);
+    assert.ok(entry.note.startsWith("# src/app.py"), entry.note);
+    assert.ok(entry.note.includes("![before](before.png)"), entry.note);
+    assert.ok(entry.note.includes("![after](after.png)"), entry.note);
+    assert.strictEqual(entry.note.startsWith("---"), false);
     assert.ok(fs.statSync(entry.before).size > 500);
     assert.ok(fs.statSync(entry.after).size > 500);
     assert.strictEqual(await pngHasColor(entry.before, 253, 232, 232), true);
@@ -171,13 +218,59 @@ suite("decap extension", () => {
     const html = exported.lastHtml();
     assert.ok(html.includes('alt="before"'), html);
     assert.ok(html.includes('alt="after"'), html);
-    assert.ok(html.includes("autofocus"), html);
+    const panel = exported.panelHtml();
+    assert.ok(panel.includes(WHY_PLACEHOLDER), panel);
+    assert.ok(panel.includes("autofocus"), panel);
+    assert.ok(panel.includes('alt="before"'), panel);
     assert.ok(exported.pendingText().includes("decap: fill in why"), exported.pendingText());
     const out = process.env.DECAP_E2E_OUT;
     if (out) {
       fs.mkdirSync(out, { recursive: true });
       fs.copyFileSync(entry.before, path.join(out, "before.png"));
       fs.copyFileSync(entry.after, path.join(out, "after.png"));
+    }
+  });
+
+  test("Fill in why saves through the panel and the status count drops", async () => {
+    const exported = await api();
+    const entry = exported.entries().find((item) => item.note.includes(`change: ${APP_KEY}`));
+    assert.ok(entry);
+    const before = pendingCount(exported.pendingText());
+    assert.ok(before >= 1, exported.pendingText());
+    await vscode.commands.executeCommand("decap.fillWhy");
+    const panel = exported.panelHtml();
+    assert.ok(panel.includes(WHY_PLACEHOLDER), panel);
+    assert.ok(panel.includes("autofocus"), panel);
+    exported.panelMessage({ type: "save", text: "The sum was wrong." });
+    const note = fs.readFileSync(path.join(entry.folder, "note.md"), "utf8").replace(/\r\n/g, "\n");
+    assert.ok(note.startsWith("# "), note);
+    assert.strictEqual(note.startsWith("---"), false);
+    assert.ok(note.includes("The sum was wrong."));
+    assert.ok(note.includes("![before](before.png)"));
+    assert.ok(note.includes("![after](after.png)"));
+    assert.ok(note.includes(`change: ${APP_KEY}`));
+    const visible = note.split("<!--")[0];
+    assert.strictEqual(visible.includes("commit:"), false);
+    assert.strictEqual(visible.includes("change:"), false);
+    assert.ok(exported.lastHtml().includes("The sum was wrong."), exported.lastHtml());
+    assert.strictEqual(pendingCount(exported.pendingText()), before - 1);
+    assert.ok(exported.panelHtml().includes("Saved."));
+  });
+
+  test("note.md opens in the text editor", async () => {
+    const exported = await api();
+    const dir = path.join(root(), ".decisions", "sample");
+    fs.mkdirSync(dir, { recursive: true });
+    const notePath = path.join(dir, "note.md");
+    fs.writeFileSync(notePath, "# src/kept.py lines 1-2\n\n<!-- decap\ncommit: abc\nfile: src/kept.py\nlines: 1-2\nage: 1 day\nchange: abc\n-->\n");
+    try {
+      await exported.openNote(notePath);
+      const editor = vscode.window.activeTextEditor;
+      assert.ok(editor, "a text editor is active");
+      assert.strictEqual(samePath(editor.document.uri.fsPath, notePath), true);
+      assert.ok(editor.document.getText().startsWith("# src/kept.py"));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
