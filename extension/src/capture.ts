@@ -97,27 +97,39 @@ function diff(root: string, revs: string[]): string {
   ]);
 }
 
-function capturedKeys(root: string): Set<string> {
+function decisionNotes(root: string): Map<string, string> {
   const dir = path.join(root, ".decisions");
-  const keys = new Set<string>();
+  const found = new Map<string, string>();
   if (!fs.existsSync(dir)) {
-    return keys;
+    return found;
   }
   for (const name of fs.readdirSync(dir)) {
     if (name.startsWith(".")) {
       continue;
     }
-    const note = path.join(dir, name, "note.md");
+    const folder = path.join(dir, name);
+    const note = path.join(folder, "note.md");
     if (!fs.existsSync(note)) {
       continue;
     }
     const text = fs.readFileSync(note, "utf8").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     const key = noteKey(text);
     if (key) {
-      keys.add(key);
+      found.set(key, folder);
     }
   }
-  return keys;
+  return found;
+}
+
+function foldersFor(notes: Map<string, string>, keys: string[]): string[] {
+  const folders: string[] = [];
+  for (const key of keys) {
+    const folder = notes.get(key);
+    if (folder && !folders.includes(folder)) {
+      folders.push(folder);
+    }
+  }
+  return folders;
 }
 
 function stamp(now: Date): string {
@@ -169,6 +181,7 @@ export interface CaptureResult {
   skipped?: "merge" | "first" | "no-text" | "added-only" | "captured" | "young";
   minAgeHours?: number;
   oldestMs?: number;
+  existing?: string[];
 }
 
 export async function capture(input: {
@@ -223,10 +236,11 @@ export async function captureDetailed(input: {
       cache.set(filePath, parsed);
       return parsed;
   };
+  const known = decisionNotes(root);
   const select = (gate: number | undefined, captured: Set<string>, markYoungBelowMs?: number) => selectDecisions({
     entries, blameOf, source: input.source, commit, minAgeMs: gate, captured, now, markYoungBelowMs,
   });
-  const chosen = select(minAge, capturedKeys(root), input.anyAge ? configured : undefined);
+  const chosen = select(minAge, new Set(known.keys()), input.anyAge ? configured : undefined);
   const written: string[] = [];
   for (const decision of chosen) {
     written.push(await publish(decision, root, now, input.fontFile));
@@ -247,13 +261,18 @@ export async function captureDetailed(input: {
   if (!hunks.some((entry) => entry.type === "hunk" && entry.hunk.lines.some((line) => line.kind === "removed"))) {
     return { ...result, skipped: "added-only" };
   }
-  if (select(minAge, new Set()).length > 0) {
-    return { ...result, skipped: "captured" };
+  const aged = select(minAge, new Set());
+  if (aged.length > 0) {
+    return { ...result, skipped: "captured", existing: foldersFor(known, aged.map((item) => item.key)) };
   }
   const any = select(0, new Set());
   if (any.length === 0) {
     return { ...result, skipped: "no-text" };
   }
-  const oldest = Math.max(...any.map((item) => item.ageMs ?? 0));
+  const unseen = select(0, new Set(known.keys()));
+  if (unseen.length === 0) {
+    return { ...result, skipped: "captured", existing: foldersFor(known, any.map((item) => item.key)) };
+  }
+  const oldest = Math.max(...unseen.map((item) => item.ageMs ?? 0));
   return { ...result, skipped: "young", oldestMs: oldest };
 }

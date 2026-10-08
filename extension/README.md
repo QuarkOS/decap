@@ -22,11 +22,11 @@ Install the extension and open a folder that contains a git repository. The repo
 
 `decap: Fill in why` opens a form for the newest capture from this session that still has no reason.
 
-`decap: Review last commit` captures HEAD even when the lines are younger than 12 hours. It says when the commit only added lines, is a merge, is the first commit, or was already captured.
+`decap: Review last commit` captures HEAD even when the lines are younger than 12 hours. It says when the commit only added lines, is a merge, or is the first commit. If that change was already captured, it opens the form that is already there.
 
 ## When nothing is captured
 
-A commit that does not change an old line leaves a status bar message for 20 seconds. The message names the reason. A line younger than 12 hours, a commit that only adds lines, a merge, and a change that was already captured each get their own reason. When the only reason is age, a notification says how old the lines are and offers Review anyway. That offer appears on every such commit. Clicking the status bar message does the same thing. Review anyway writes the capture with the real age, marks the note `young: true`, and opens Fill in why. A later normal capture of that same change writes nothing.
+A commit that does not change an old line leaves a status bar message for 20 seconds. The message names the reason. A line younger than 12 hours, a commit that only adds lines, a merge, and a change that was already captured each get their own reason. When the only reason is age, a notification says how old the lines are and offers Review anyway. An age under a minute reads less than a minute, on the notification, the images, and the form. The same short sentence is the status bar message, and clicking it reviews the commit. Review anyway writes the capture, marks the note `young: true`, and opens Fill in why without a second notification. A change that was already reviewed does not offer Review anyway. A later click opens the form that is already there. A later normal capture of that same change writes nothing.
 
 ## Sidebar
 

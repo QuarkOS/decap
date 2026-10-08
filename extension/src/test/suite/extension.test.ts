@@ -315,12 +315,12 @@ suite("decap extension", () => {
     await exported.refreshGit();
     await waitFor(() => exported.skips().includes("young"), "the young skip");
     assert.strictEqual(exported.entries().length, before);
-    const status = exported.statusMessages().find((item) => item.includes("younger than 12 hours"));
-    assert.ok(status, exported.statusMessages().join("\n"));
-    assert.ok(status.startsWith("decap: nothing captured, "));
     const offer = exported.reviews().find((item) => item.action === "Review anyway");
     assert.ok(offer, exported.reviews().map((item) => item.message).join("\n"));
-    assert.match(offer.message, /^Nothing captured: these lines are only (less than a minute|\d+ minutes?) old$/);
+    assert.match(offer.message, /^Nothing captured: these lines are (less than a minute old|only \d+ (minute|hour|day)s? old)$/);
+    const status = exported.statusMessages().find((item) => item === offer.message);
+    assert.ok(status, exported.statusMessages().join("\n"));
+    assert.strictEqual(exported.statusMessages().some((item) => item.includes("younger than 12 hours")), false);
     assert.strictEqual(exported.notices().length, 0);
   });
 
@@ -331,27 +331,68 @@ suite("decap extension", () => {
     const offer = exported.reviews().at(-1);
     assert.ok(offer);
     assert.strictEqual(offer.action, "Review anyway");
+    const promptsBefore = exported.prompts().length;
     await exported.reviewAnyway();
     await waitFor(
       () => exported.entries().some((entry) => entry.note.includes("young: true")),
       "a young capture",
     );
+    assert.strictEqual(exported.prompts().length, promptsBefore);
     const entry = exported.entries().find((item) => item.note.includes("young: true"));
     assert.ok(entry);
     assert.ok(entry.note.includes("file: src/app.py"), entry.note);
     const age = entry.note.match(/^age: (.+)$/m);
     assert.ok(age, entry.note);
-    assert.match(age[1], /^\d+ minutes?$/);
+    assert.match(age[1], /^(less than a minute|\d+ minutes?)$/);
+    assert.strictEqual(entry.note.includes("0 minutes"), false);
     assert.ok(fs.statSync(entry.before).size > 500);
     assert.ok(fs.statSync(entry.after).size > 500);
     const panel = exported.panelHtml();
     assert.ok(panel.includes(WHY_PLACEHOLDER), panel);
     assert.ok(panel.includes(age[1]), panel);
+    assert.strictEqual(panel.includes("0 minutes"), false);
+    assert.ok(panel.includes("why.focus()"), panel);
+    assert.ok(panel.includes('event.data.type === "focus"'), panel);
     assert.strictEqual(exported.entries().length, before + 1);
     const again = exported.entries().length;
     await exported.reviewAnyway();
     assert.strictEqual(exported.entries().length, again);
-    assert.ok(exported.reviewNotes().some((item) => item === "Nothing to review: this change was already captured."));
+    assert.strictEqual(exported.prompts().length, promptsBefore);
+    assert.ok(exported.reviewNotes().some((item) => item === "Opened the form for this capture."));
+    assert.ok(exported.panelHtml().includes(WHY_PLACEHOLDER));
+  });
+
+  test("a young change that is already captured does not offer Review anyway", async function () {
+    this.timeout(30000);
+    const exported = await api();
+    const reviewsBefore = exported.reviews().length;
+    const youngBefore = exported.skips().filter((item) => item === "young").length;
+    const capturedBefore = exported.skips().filter((item) => item === "captured").length;
+    const key = changeKey("commit", {
+      path: "src/watch.py",
+      oldStart: 1,
+      newStart: 1,
+      lines: [
+        { kind: "removed", text: "    return 1" },
+        { kind: "added", text: "    return 2" },
+      ],
+    });
+    const dir = path.join(root(), ".decisions", "already");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "note.md"),
+      `# src/watch.py lines 2\n\n![before](before.png)\n![after](after.png)\n\n<!-- decap\ncommit: abc\nfile: src/watch.py\nlines: 2\nage: less than a minute\nchange: ${key}\nyoung: true\n-->\n`,
+    );
+    fs.writeFileSync(path.join(root(), "src", "watch.py"), "def watch():\n    return 2\n");
+    git(["add", "src/watch.py"]);
+    git(["-c", "commit.gpgsign=false", "commit", "-m", "watch again"]);
+    await exported.refreshGit();
+    await waitFor(
+      () => exported.skips().filter((item) => item === "captured").length > capturedBefore,
+      "a captured young skip",
+    );
+    assert.strictEqual(exported.reviews().length, reviewsBefore);
+    assert.strictEqual(exported.skips().filter((item) => item === "young").length, youngBefore);
   });
 
   test("a commit that only adds lines is skipped as added-only", async () => {

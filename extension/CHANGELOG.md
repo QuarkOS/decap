@@ -2,7 +2,7 @@
 
 ## 0.1.4
 
-A commit younger than 12 hours still stays out of `.decisions` until you ask. The notification says how old the lines are and offers Review anyway, every time. The status bar message stays, and clicking it reviews that commit too. Review anyway writes the usual images and note, shows the real age, marks the note `young: true`, and opens Fill in why. The same change is not written again by a later capture or by the hook. `decap: Review last commit` reviews HEAD even when the lines are already old enough, and it says when there is nothing to review. `decap hook --any-age` does the same capture from the command line.
+A commit younger than 12 hours still stays out of `.decisions` until you ask. The notification says how old the lines are and offers Review anyway. An age under a minute reads less than a minute, including on the images and the form. The status bar uses that same short sentence, and clicking it reviews the commit. Review anyway writes the usual images and note, marks the note `young: true`, and opens Fill in why without a second notification, so the text box keeps the keyboard. A change that was already reviewed does not offer Review anyway again. A later click opens the form that is already there. The same change is not written again by a later capture or by the hook. `decap: Review last commit` reviews HEAD even when the lines are already old enough, and it says when there is nothing to review. `decap hook --any-age` does the same capture from the command line.
 
 ## 0.1.3
 

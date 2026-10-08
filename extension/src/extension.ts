@@ -12,15 +12,11 @@ export function capturePrompt(name: string): { message: string; action: string }
   return { message: `decap saved ${name}`, action: "Fill in why" };
 }
 
-function oldLabel(ageMs: number): string {
-  return ageMs < 60 * 60 * 1000 ? "changed less than an hour ago" : `${ageLabel(ageMs)} old`;
-}
-
-function offerAge(ageMs: number): string {
+export function youngNotice(ageMs: number): string {
   if (ageMs < 60 * 1000) {
-    return "less than a minute";
+    return "Nothing captured: these lines are less than a minute old";
   }
-  return ageLabel(ageMs);
+  return `Nothing captured: these lines are only ${ageLabel(ageMs)} old`;
 }
 
 export function reviewEmpty(result: CaptureResult): string {
@@ -39,10 +35,9 @@ export function reviewEmpty(result: CaptureResult): string {
 }
 
 export function skipText(result: CaptureResult): string {
-  const hours = result.minAgeHours ?? 12;
   switch (result.skipped) {
     case "young":
-      return `the lines you changed are younger than ${hours} hours${result.oldestMs !== undefined ? ` (the oldest was ${oldLabel(result.oldestMs)})` : ""}`;
+      return youngNotice(result.oldestMs ?? 0);
     case "added-only":
       return "it only added new lines, and decap captures changes to existing lines";
     case "captured":
@@ -113,6 +108,21 @@ export async function activate(context: vscode.ExtensionContext) {
     pendingItem.show();
   }
 
+  function remember(root: string, folders: string[]) {
+    prime(root);
+    for (const folder of folders) {
+      const key = pathKey(folder);
+      if (announced.has(key)) {
+        continue;
+      }
+      announced.add(key);
+      pending.unshift(folder);
+    }
+    viewRoot = root;
+    view.refresh();
+    updatePending();
+  }
+
   function announce(root: string) {
     prime(root);
     for (const entry of listDecisions(root)) {
@@ -163,8 +173,20 @@ export async function activate(context: vscode.ExtensionContext) {
     }
     if (result.written.length > 0) {
       log(`reviewed ${result.commit.slice(0, 7)} in ${result.root}: ${result.written.map((item) => path.basename(item)).join(", ")}`);
-      announce(result.root);
+      youngItem.hide();
+      remember(result.root, result.written);
       fillWhy(result.written[0]);
+      return;
+    }
+    if (result.skipped === "captured" && result.existing && result.existing.length > 0) {
+      const message = "Opened the form for this capture.";
+      reviewNotes.push(message);
+      log(message);
+      youngItem.hide();
+      fillWhy(result.existing[0]);
+      if (process.env.DECAP_TEST !== "1") {
+        void vscode.window.setStatusBarMessage(`$(info) ${message}`, 20000);
+      }
       return;
     }
     const message = reviewEmpty(result);
@@ -190,8 +212,8 @@ export async function activate(context: vscode.ExtensionContext) {
       return;
     }
     const reason = skipText(result);
-    log(`commit ${sha} in ${root}: nothing captured, because ${reason}`);
-    const status = `decap: nothing captured, ${reason}`;
+    const status = result.skipped === "young" ? reason : `decap: nothing captured, ${reason}`;
+    log(result.skipped === "young" ? `commit ${sha} in ${root}: ${status}` : `commit ${sha} in ${root}: nothing captured, because ${reason}`);
     statusMessages.push(status);
     if (result.skipped) {
       skips.push(result.skipped);
@@ -205,7 +227,7 @@ export async function activate(context: vscode.ExtensionContext) {
       }
       youngTimer = setTimeout(() => youngItem.hide(), 20000);
       const review = {
-        message: `Nothing captured: these lines are only ${offerAge(result.oldestMs ?? 0)} old`,
+        message: status,
         action: "Review anyway",
       };
       reviews.push(review);
@@ -278,6 +300,11 @@ export async function activate(context: vscode.ExtensionContext) {
         }
       });
       whyPanel.webview.onDidReceiveMessage((message: { type?: string; text?: string }) => onWhyMessage(message));
+      whyPanel.onDidChangeViewState((event) => {
+        if (event.webviewPanel.visible && event.webviewPanel.active) {
+          void event.webviewPanel.webview.postMessage({ type: "focus" });
+        }
+      });
     }
     whyFolder = folder;
     whyPanel.title = title;
@@ -297,6 +324,7 @@ export async function activate(context: vscode.ExtensionContext) {
     whyHtml = html;
     whyPanel.webview.html = html;
     whyPanel.reveal(vscode.ViewColumn.Active);
+    void whyPanel.webview.postMessage({ type: "focus" });
   }
 
   function onWhyMessage(message: { type?: string; text?: string }) {

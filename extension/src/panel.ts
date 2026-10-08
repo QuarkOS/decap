@@ -63,7 +63,13 @@ ${csp}
         save();
       }
     });
-    if (why) why.focus();
+    const focusWhy = () => {
+      if (why) why.focus();
+    };
+    window.addEventListener("message", (event) => {
+      if (event.data && event.data.type === "focus") focusWhy();
+    });
+    focusWhy();
   </script>
 </body>
 </html>`;

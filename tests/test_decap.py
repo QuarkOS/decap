@@ -204,6 +204,26 @@ def test_note_and_age_gate():
     )
     assert len(equal) == 1
 
+    fresh = {11: int((now - timedelta(seconds=10)).timestamp())}
+
+    def fresh_blame(_path: str) -> dict[int, int]:
+        return fresh
+
+    recent = select_decisions(
+        (hunk,),
+        fresh_blame,
+        source="commit",
+        commit="abc123",
+        min_age=timedelta(0),
+        captured=frozenset(),
+        now=now,
+    )
+    assert len(recent) == 1
+    assert recent[0].before_header.endswith("lived less than a minute")
+    assert recent[0].after_header.endswith("lived less than a minute")
+    assert "age: less than a minute" in recent[0].note_md.splitlines()
+    assert "0 minutes" not in recent[0].note_md
+
 
 def test_install_hook_keeps_existing_hook(tmp_path):
     repo = git_repo(tmp_path)

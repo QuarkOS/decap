@@ -232,6 +232,8 @@ def _age_label(age: timedelta | None) -> str:
     if age is None:
         return ""
     seconds = max(0, int(age.total_seconds()))
+    if seconds < 60:
+        return "less than a minute"
     if seconds < 3600:
         count, unit = seconds // 60, "minute"
     elif seconds < 86400:

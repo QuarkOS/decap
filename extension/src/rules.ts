@@ -261,6 +261,9 @@ export function ageLabel(ageMs: number | undefined): string {
     return "";
   }
   const seconds = Math.max(0, Math.floor(ageMs / 1000));
+  if (seconds < 60) {
+    return "less than a minute";
+  }
   let count: number;
   let unit: string;
   if (seconds < 3600) {
