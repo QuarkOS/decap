@@ -55,22 +55,22 @@ npm install
 npx @vscode/vsce package
 ```
 
-That writes `decap-0.1.6.vsix`. The CI artifact is the same file.
+That writes `decap-0.1.7.vsix`. The CI artifact is the same file.
 
-In VS Code, open Extensions and choose Install from VSIX. From a terminal, run `code --install-extension decap-0.1.6.vsix`.
+In VS Code, open Extensions and choose Install from VSIX. From a terminal, run `code --install-extension decap-0.1.7.vsix`.
 
-In Cursor, use the same Install from VSIX action, or run `cursor --install-extension decap-0.1.6.vsix`.
+In Cursor, use the same Install from VSIX action, or run `cursor --install-extension decap-0.1.7.vsix`.
 
 Open a folder that contains a git repository. The repository can be that folder, or the folder directly inside it. Installing the extension is the whole setup. The editor does not need Python and does not install a hook. A commit that changes a line at least 12 hours old is captured while the window is open. Opening the editor later captures a commit that was made while it was closed, when the changed lines are at least 12 hours old. A commit that is too new to capture says so in the status bar and offers Review anyway. `decap: Review last commit` captures HEAD at any age. `decap: Show log` opens the output channel. `pipx install .` from a checkout still installs the command-line tool for terminal-only use.
 
 `decap: Snap` captures the working tree. The default key is Alt+Shift+S. `decap: Open decisions` focuses the sidebar.
 
-The sidebar lists `.decisions` folders from the git repository, newest first. Before the first capture it says that a capture appears after you commit a change to an old line. Each entry shows the before image and the after image stacked. Edit the Why box and leave the field to save `note.md`.
+The sidebar lists `.decisions` folders from the git repository, newest first. Before the first capture it says that a capture appears after you commit a change to an old line. Each row shows the folder, the file, and the first line of the reason. Typing in the search box keeps rows whose reason, file name, or age matches. Each entry shows the before image and the after image stacked. Edit the Why box and leave the field to save `note.md`.
 
 A new capture shows a notification with Fill in why. That opens a form in the editor for the reason, with the two images above the text box. `note.md` itself is a heading, that reason, and the images. If the command-line hook is also installed, the shared change hash keeps the editor from writing a second copy of the same capture. A rebase keeps that reason on the new commit and does not ask again.
 
 ![Fill in why](extension/media/why-panel-dark.png)
 
-To publish on Open VSX, download the CI vsix and run `npx ovsx publish decap-0.1.6.vsix` with your own token. The Marketplace is a separate publisher account and `vsce publish`. This repository has no publish workflow and no publish token.
+To publish on Open VSX, download the CI vsix and run `npx ovsx publish decap-0.1.7.vsix` with your own token. The Marketplace is a separate publisher account and `vsce publish`. This repository has no publish workflow and no publish token.
 
 The plan is in [PLAN.md](PLAN.md).

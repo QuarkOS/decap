@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+The decision list shows the first line of the reason on each row. Typing in the search box keeps rows that match that reason, the file name, or how old the change is.
+
 ## 0.1.6
 
 A rebase keeps a reason you already wrote. The note follows the new commit, and decap does not ask for that reason again. The hook and the editor share that note instead of writing a second one. Notes from 0.1.0 through 0.1.5 still open, including a reason already saved.

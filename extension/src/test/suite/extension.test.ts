@@ -32,6 +32,7 @@ interface Api {
   panelMessage: (message: { type?: string; text?: string }) => void;
   openNote: (notePath: string) => Promise<void>;
   refresh: () => void;
+  search: (text: string) => void;
 }
 
 async function api(): Promise<Api> {
@@ -575,6 +576,82 @@ suite("decap extension", () => {
     const notes = exported.entries().filter((entry) => entry.note.includes(`change: ${OLD_KEY}`));
     assert.strictEqual(notes.length, 1);
     assert.strictEqual(exported.entries().length, before + 1);
+  });
+
+  test("the decision list shows a saved why and search drops the other row", async () => {
+    const exported = await api();
+    const cacheDir = path.join(root(), ".decisions", "search-cache");
+    const flagDir = path.join(root(), ".decisions", "search-flag");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.mkdirSync(flagDir, { recursive: true });
+    fs.writeFileSync(path.join(cacheDir, "note.md"), [
+      "# src/cache.py lines 4-9",
+      "",
+      "Kept the cache warm.",
+      "It should stay out of the row.",
+      "",
+      "![before](before.png)",
+      "![after](after.png)",
+      "",
+      "<!-- decap",
+      "commit: aaa111",
+      "file: src/cache.py",
+      "lines: 4-9",
+      "age: 3 days",
+      "change: cccc1111cccc1111",
+      "-->",
+      "",
+    ].join("\n"));
+    fs.writeFileSync(path.join(flagDir, "note.md"), [
+      "---",
+      "commit: bbb222",
+      "file: src/flags.py",
+      "lines: 2",
+      "age: 5 hours",
+      "change: dddd2222dddd2222",
+      "---",
+      "",
+      "Why:",
+      "Dropped the unused flag.",
+      "",
+    ].join("\n"));
+    try {
+      await vscode.commands.executeCommand("decap.openDecisions");
+      exported.refresh();
+      const opened = exported.standaloneHtml();
+      assert.ok(opened.includes('<span class="title">search-cache  src/cache.py</span>'), opened);
+      assert.ok(opened.includes('<span class="why">Kept the cache warm.</span>'), opened);
+      assert.ok(opened.includes('<span class="title">search-flag  src/flags.py</span>'), opened);
+      assert.ok(opened.includes('<span class="why">Dropped the unused flag.</span>'), opened);
+      assert.strictEqual(opened.includes("It should stay out of the row."), false);
+      assert.strictEqual(opened.includes("cccc1111cccc1111"), false);
+      assert.strictEqual(opened.includes("dddd2222dddd2222"), false);
+      exported.search("warm");
+      const byWhy = exported.standaloneHtml();
+      assert.ok(byWhy.includes('value="warm"'), byWhy);
+      assert.ok(byWhy.includes('<span class="why">Kept the cache warm.</span>'), byWhy);
+      assert.strictEqual(byWhy.includes("Dropped the unused flag."), false);
+      assert.strictEqual(byWhy.includes("search-flag"), false);
+      exported.search("flags.py");
+      const byFile = exported.standaloneHtml();
+      assert.ok(byFile.includes('<span class="why">Dropped the unused flag.</span>'), byFile);
+      assert.ok(byFile.includes("src/flags.py"), byFile);
+      assert.strictEqual(byFile.includes("Kept the cache warm."), false);
+      exported.search("5 hours");
+      const byAge = exported.standaloneHtml();
+      assert.ok(byAge.includes('<span class="why">Dropped the unused flag.</span>'), byAge);
+      assert.strictEqual(byAge.includes("Kept the cache warm."), false);
+      exported.search("cccc1111cccc1111");
+      const byHash = exported.standaloneHtml();
+      assert.ok(byHash.includes("No matching decisions."), byHash);
+      assert.strictEqual(byHash.includes("Kept the cache warm."), false);
+      assert.strictEqual(byHash.includes("Dropped the unused flag."), false);
+    } finally {
+      exported.search("");
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+      fs.rmSync(flagDir, { recursive: true, force: true });
+      exported.refresh();
+    }
   });
 
   test("does not call Python", () => {

@@ -30,7 +30,7 @@ A commit that does not change an old line leaves a status bar message for 20 sec
 
 ## Sidebar
 
-The Decisions view lists `.decisions` folders from the git repository, newest first. Before any capture it explains that a capture appears after you commit a change to an old line. Select one to see the before image and the after image stacked. Edit the Why box and leave the field to save `note.md`. The same text appears in the Fill in why form.
+The Decisions view lists `.decisions` folders from the git repository, newest first. Before any capture it explains that a capture appears after you commit a change to an old line. Each row shows the folder, the file, and the first line of the reason. Typing in the search box keeps rows whose reason, file name, or age matches. Select one to see the before image and the after image stacked. Edit the Why box and leave the field to save `note.md`. The same text appears in the Fill in why form.
 
 A new capture shows a notification with Fill in why. That opens a form in the editor, focused on the reason, and selects the capture in the sidebar. The form shows the file name, the line range, how old the line was, a short commit hash, and the two images. Save stores the reason. If other captures from this session still need a reason, the form moves to the next one. Escape or closing the form leaves the reason empty. The status bar keeps `decap: fill in why` until a reason is saved.
 
