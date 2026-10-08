@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { capture, captureDetailed, CaptureResult, commitFreshness, setGitPath } from "./capture";
+import { capture, captureDetailed, CaptureResult, commitDescendsFrom, commitFreshness, commitsSince, readSeenCommit, resolveCommit, setGitPath, writeSeenCommit } from "./capture";
 import { watchCommits } from "./git";
 import { applyWhy, fileMeta, fileTitle, parseNote } from "./note";
 import { renderSaved, renderWhyPanel } from "./panel";
@@ -197,14 +197,7 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   }
 
-  async function onCommit(root: string) {
-    const fresh = commitFreshness(root);
-    if (!fresh.fresh) {
-      log(`skipped ${root}: ${fresh.detail}`);
-      return;
-    }
-    prime(root);
-    const result = await captureDetailed({ start: root, source: "commit", fontFile });
+  function present(root: string, result: CaptureResult) {
     const sha = result.commit.slice(0, 7);
     if (result.written.length > 0) {
       log(`commit ${sha} in ${root}: captured ${result.written.map((item) => path.basename(item)).join(", ")}`);
@@ -242,6 +235,36 @@ export async function activate(context: vscode.ExtensionContext) {
     }
     youngItem.hide();
     context.subscriptions.push(vscode.window.setStatusBarMessage(`$(info) ${status}`, 20000));
+  }
+
+  async function onCommit(root: string, observed: string) {
+    const head = resolveCommit(root, observed);
+    const prior = readSeenCommit(root);
+    if (prior && prior.commit === head) {
+      return;
+    }
+    if (prior && commitDescendsFrom(root, prior.commit, head)) {
+      const missed = commitsSince(root, prior.commit, head);
+      prime(root);
+      for (const sha of missed) {
+        present(root, await captureDetailed({ start: root, source: "commit", fontFile, rev: sha }));
+      }
+      writeSeenCommit(root, { commit: head });
+      return;
+    }
+    const fresh = commitFreshness(root, new Date(), head);
+    if (!fresh.fresh) {
+      if (!prior) {
+        log(`existing history in ${root} was left as it is`);
+      } else {
+        log(`skipped ${root}: ${fresh.detail}`);
+      }
+      writeSeenCommit(root, { commit: head });
+      return;
+    }
+    prime(root);
+    present(root, await captureDetailed({ start: root, source: "commit", fontFile, rev: head }));
+    writeSeenCommit(root, { commit: head });
   }
 
   const watching = watchCommits(context, onCommit, {

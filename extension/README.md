@@ -4,13 +4,13 @@ decap saves a before image and an after image when a commit changes a line that 
 
 ## Requirements
 
-Git. The extension does not need Python. On Windows, install Git for Windows. Commits made while the editor is closed are not captured.
+Git. The extension does not need Python. On Windows, install Git for Windows. A commit made while the editor is closed is saved when you open the editor again.
 
 The command-line tool in this repository is separate. It needs Python 3.11 or newer and a post-commit hook. Use it when you want captures from a terminal with no editor open.
 
 ## First run
 
-Install the extension and open a folder that contains a git repository. The repository can be that folder, or the folder directly inside it. There is no setup step. The next commit that changes a line at least 12 hours old is saved under `.decisions` in the repository.
+Install the extension and open a folder that contains a git repository. The repository can be that folder, or the folder directly inside it. There is no setup step. A commit that changes a line at least 12 hours old is saved under `.decisions` in the repository. That includes a commit made while the editor was closed.
 
 ## Commands
 

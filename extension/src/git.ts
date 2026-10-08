@@ -49,13 +49,13 @@ export interface WatchHooks {
 
 export function watchCommits(
   context: vscode.ExtensionContext,
-  onCommit: (root: string) => Promise<void>,
+  onCommit: (root: string, commit: string) => Promise<void>,
   hooks: WatchHooks,
 ): GitWatch {
   const repos = new Set<GitRepository>();
   let chain = Promise.resolve();
-  const enqueue = (root: string) => {
-    chain = chain.then(() => onCommit(root)).catch((err: unknown) => {
+  const enqueue = (root: string, commit: string) => {
+    chain = chain.then(() => onCommit(root, commit)).catch((err: unknown) => {
       const message = err instanceof Error ? err.message.trim() : "";
       hooks.log(`capture failed in ${root}: ${message || String(err)}`);
       void vscode.window.showErrorMessage(message ? `decap could not capture this commit. ${message}` : "decap could not capture this commit.");
@@ -76,8 +76,11 @@ export function watchCommits(
       }
       hooks.log(`HEAD moved to ${next.slice(0, 7)} in ${repo.rootUri.fsPath}`);
       seen = next;
-      enqueue(repo.rootUri.fsPath);
+      enqueue(repo.rootUri.fsPath, next);
     }));
+    if (seen) {
+      enqueue(repo.rootUri.fsPath, seen);
+    }
   };
   const whenReady = (async () => {
     const ext = vscode.extensions.getExtension<GitExtension>("vscode.git");

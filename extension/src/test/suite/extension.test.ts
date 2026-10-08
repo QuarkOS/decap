@@ -128,6 +128,58 @@ suite("decap extension", () => {
     return;
   }
 
+  if (process.env.DECAP_LAYOUT === "closed-prime") {
+    test("opening a repository leaves its current commit uncaptured", async function () {
+      this.timeout(45000);
+      const exported = await api();
+      await exported.whenWatching();
+      await exported.refreshGit();
+      assert.strictEqual(exported.entries().length, 0);
+      assert.strictEqual(exported.prompts().length, 0);
+    });
+    return;
+  }
+
+  if (process.env.DECAP_LAYOUT === "closed-reopen") {
+    test("a commit made while the editor was closed is captured on reopen", async function () {
+      this.timeout(90000);
+      const exported = await api();
+      await exported.whenWatching();
+      await exported.refreshGit();
+      await waitFor(
+        () => exported.entries().some((entry) => entry.note.includes(`change: ${APP_KEY}`)),
+        "the commit made while closed",
+      );
+      const entry = exported.entries().find((item) => item.note.includes(`change: ${APP_KEY}`));
+      assert.ok(entry);
+      assert.ok(entry.note.startsWith("# src/app.py"), entry.note);
+      assert.ok(entry.note.includes("file: src/app.py"), entry.note);
+      assert.ok(entry.note.includes("![before](before.png)"), entry.note);
+      assert.ok(entry.note.includes("![after](after.png)"), entry.note);
+      assert.strictEqual(entry.note.includes("young: true"), false);
+      assert.ok(fs.statSync(entry.before).size > 500);
+      assert.ok(fs.statSync(entry.after).size > 500);
+      const prompt = exported.prompts().find((item) => item.message === `decap saved ${entry.name}`);
+      assert.ok(prompt, exported.prompts().map((item) => item.message).join("\n"));
+      assert.strictEqual(prompt.action, "Fill in why");
+      const hookNotes = exported.entries().filter((item) => item.note.includes(`change: ${OLD_KEY}`));
+      assert.strictEqual(hookNotes.length, 1);
+      assert.strictEqual(hookNotes[0].name, "from-hook");
+      assert.strictEqual(exported.entries().filter((item) => item.note.includes("file: src/old.py")).length, 1);
+      assert.strictEqual(exported.entries().length, 2);
+      assert.strictEqual(exported.prompts().length, 1);
+      assert.strictEqual(
+        exported.prompts().some((item) => item.message === `decap saved ${hookNotes[0].name}`),
+        false,
+      );
+      assert.strictEqual(exported.entries().some((item) => item.note.includes("young: true")), false);
+      assert.ok(exported.skips().includes("young"), exported.skips().join(","));
+      const offer = exported.reviews().find((item) => item.action === "Review anyway");
+      assert.ok(offer, exported.reviews().map((item) => item.message).join("\n"));
+    });
+    return;
+  }
+
   test("reads a legacy note and writes a readable one", () => {
     const legacy = "---\ncommit: abc123\nfile: src/app.py\nlines: 10-12\nage: 2 days\nchange: abcdef\n---\n\nWhy:\nbecause\n";
     const parsed = parseNote(legacy);
