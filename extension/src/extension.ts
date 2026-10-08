@@ -4,7 +4,14 @@ import * as vscode from "vscode";
 import { capture, captureDetailed, CaptureResult, commitDescendsFrom, commitFreshness, commitsSince, readSeenCommit, resolveCommit, setGitPath, writeSeenCommit } from "./capture";
 import { watchCommits } from "./git";
 import { applyWhy, fileMeta, fileTitle, parseNote } from "./note";
-import { renderSaved, renderWhyPanel } from "./panel";
+import { renderSaved, renderWhyPanel, SAVED_HOLD_MS, waitingLine } from "./panel";
+
+interface OpenCapturePrompt {
+  folder: string;
+  message: string;
+  action: string;
+  close: () => void;
+}
 import { ageLabel } from "./rules";
 import { decisionRow, listDecisions, renderPage, rowMatches } from "./view";
 
@@ -66,8 +73,10 @@ export async function activate(context: vscode.ExtensionContext) {
   let viewRoot: string | undefined;
   const view = new DecisionView(() => viewRoot ?? workspaceRoot(), (folder, text) => writeWhy(folder, text, "sidebar"));
   const announced = new Set<string>();
+  const prompted = new Set<string>();
   const primed = new Set<string>();
   const pending: string[] = [];
+  const openPrompts: OpenCapturePrompt[] = [];
   const pendingItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   pendingItem.command = "decap.fillWhy";
   const youngItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 40);
@@ -83,8 +92,16 @@ export async function activate(context: vscode.ExtensionContext) {
     }
     primed.add(key);
     for (const entry of listDecisions(root)) {
-      announced.add(pathKey(entry.folder));
+      const folderKey = pathKey(entry.folder);
+      announced.add(folderKey);
+      if (parseNote(entry.note).why.trim() !== "") {
+        continue;
+      }
+      if (!pending.some((item) => pathKey(item) === folderKey)) {
+        pending.unshift(entry.folder);
+      }
     }
+    updatePending();
   }
   const initial = workspaceRoot();
   if (initial) {
@@ -135,14 +152,8 @@ export async function activate(context: vscode.ExtensionContext) {
       const prompt = capturePrompt(entry.name);
       prompts.push(prompt);
       pending.unshift(folder);
-      if (process.env.DECAP_TEST === "1") {
-        continue;
-      }
-      void vscode.window.showInformationMessage(prompt.message, prompt.action).then((choice) => {
-        if (choice === prompt.action) {
-          void fillWhy(folder);
-        }
-      });
+      prompted.add(key);
+      showCapturePrompt(folder, prompt);
     }
     viewRoot = root;
     view.refresh();
@@ -210,6 +221,11 @@ export async function activate(context: vscode.ExtensionContext) {
     statusMessages.push(status);
     if (result.skipped) {
       skips.push(result.skipped);
+    }
+    if (result.skipped === "captured") {
+      for (const folder of result.existing ?? []) {
+        offerWhy(folder);
+      }
     }
     if (result.skipped === "young") {
       lastYoungRoot = root;
@@ -299,7 +315,88 @@ export async function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  function needsWhy(folder: string): boolean {
+    const notePath = path.join(folder, "note.md");
+    if (!fs.existsSync(notePath)) {
+      return false;
+    }
+    return parseNote(fs.readFileSync(notePath, "utf8")).why.trim() === "";
+  }
+
+  function dropPrompt(entry: OpenCapturePrompt): void {
+    const index = openPrompts.indexOf(entry);
+    if (index >= 0) {
+      openPrompts.splice(index, 1);
+    }
+    entry.close();
+  }
+
+  function dismissPrompt(folder: string): void {
+    const key = pathKey(folder);
+    for (const entry of openPrompts.filter((item) => pathKey(item.folder) === key)) {
+      dropPrompt(entry);
+    }
+  }
+
+  function showCapturePrompt(folder: string, prompt: { message: string; action: string }): void {
+    let settle = () => undefined;
+    let settled = false;
+    const done = new Promise<void>((resolve) => {
+      settle = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve();
+      };
+    });
+    const entry: OpenCapturePrompt = {
+      folder,
+      message: prompt.message,
+      action: prompt.action,
+      close: settle,
+    };
+    openPrompts.push(entry);
+    const options: vscode.ProgressOptions = {
+      location: vscode.ProgressLocation.Notification,
+      title: prompt.message,
+      cancellable: prompt.action as unknown as boolean,
+    };
+    void vscode.window.withProgress(options, (_progress, token) => {
+      token.onCancellationRequested(() => {
+        dropPrompt(entry);
+        if (needsWhy(folder)) {
+          fillWhy(folder);
+        }
+      });
+      return done;
+    }).then(undefined, () => undefined);
+  }
+
+  function offerWhy(folder: string): void {
+    if (!needsWhy(folder)) {
+      return;
+    }
+    const key = pathKey(folder);
+    announced.add(key);
+    if (!pending.some((item) => pathKey(item) === key)) {
+      pending.unshift(folder);
+    }
+    updatePending();
+    if (prompted.has(key)) {
+      return;
+    }
+    prompted.add(key);
+    const prompt = capturePrompt(path.basename(folder));
+    prompts.push(prompt);
+    showCapturePrompt(folder, prompt);
+  }
+
   function showWhy(folder: string, banner?: string) {
+    if (whyClose) {
+      clearTimeout(whyClose);
+      whyClose = undefined;
+    }
     view.select(folder);
     const notePath = path.join(folder, "note.md");
     if (!fs.existsSync(notePath)) {
@@ -335,13 +432,14 @@ export async function activate(context: vscode.ExtensionContext) {
       enableScripts: true,
       localResourceRoots: resourceRoots(folder),
     };
+    const others = pending.filter((item) => pathKey(item) !== pathKey(folder)).length;
     const html = renderWhyPanel({
       title,
       meta: fileMeta(parsed),
       beforeSrc: whyPanel.webview.asWebviewUri(vscode.Uri.file(path.join(folder, "before.png"))).toString(),
       afterSrc: whyPanel.webview.asWebviewUri(vscode.Uri.file(path.join(folder, "after.png"))).toString(),
       why: parsed.why,
-      banner,
+      banner: banner ?? waitingLine(others),
       cspSource: whyPanel.webview.cspSource,
     });
     whyHtml = html;
@@ -367,14 +465,11 @@ export async function activate(context: vscode.ExtensionContext) {
       const html = renderSaved(whyPanel.webview.cspSource);
       whyHtml = html;
       whyPanel.webview.html = html;
-      if (process.env.DECAP_TEST === "1") {
-        return;
-      }
       if (whyClose) {
         clearTimeout(whyClose);
       }
       const closing = whyPanel;
-      whyClose = setTimeout(() => closing.dispose(), 700);
+      whyClose = setTimeout(() => closing.dispose(), SAVED_HOLD_MS);
       return;
     }
     showWhy(pending[0], `Saved. ${pending.length} more to fill in.`);
@@ -394,6 +489,7 @@ export async function activate(context: vscode.ExtensionContext) {
     fs.writeFileSync(notePath, applyWhy(note, text), "utf8");
     view.refresh();
     updatePending();
+    dismissPrompt(folder);
     if (source === "sidebar" && whyPanel && whyFolder === folder) {
       showWhy(folder);
     }
@@ -439,6 +535,12 @@ export async function activate(context: vscode.ExtensionContext) {
     fillWhy: (folder: string) => fillWhy(folder),
     panelHtml: () => whyHtml,
     panelMessage: (message: { type?: string; text?: string }) => onWhyMessage(message),
+    visiblePrompts: () => openPrompts.map((item) => ({ message: item.message, action: item.action })),
+    openPrompt: (folder: string) => {
+      if (needsWhy(folder)) {
+        fillWhy(folder);
+      }
+    },
     openNote: (notePath: string) => openNoteAsText(vscode.Uri.file(notePath)),
     refresh: () => view.refresh(),
     search: (text: string) => view.search(text),

@@ -30,6 +30,8 @@ interface Api {
   fillWhy: (folder: string) => void;
   panelHtml: () => string;
   panelMessage: (message: { type?: string; text?: string }) => void;
+  visiblePrompts: () => { message: string; action: string }[];
+  openPrompt: (folder: string) => void;
   openNote: (notePath: string) => Promise<void>;
   refresh: () => void;
   search: (text: string) => void;
@@ -66,6 +68,13 @@ function samePath(left: string, right: string): boolean {
   const a = path.resolve(left);
   const b = path.resolve(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function fontSize(html: string, selector: string): number {
+  const pattern = new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{[^}]*font-size:\\s*(\\d+)px");
+  const match = html.match(pattern);
+  assert.ok(match, html);
+  return Number(match[1]);
 }
 
 function pendingCount(text: string): number {
@@ -168,11 +177,15 @@ suite("decap extension", () => {
       assert.strictEqual(hookNotes[0].name, "from-hook");
       assert.strictEqual(exported.entries().filter((item) => item.note.includes("file: src/old.py")).length, 1);
       assert.strictEqual(exported.entries().length, 2);
-      assert.strictEqual(exported.prompts().length, 1);
-      assert.strictEqual(
-        exported.prompts().some((item) => item.message === `decap saved ${hookNotes[0].name}`),
-        false,
+      const hookPrompt = exported.prompts().find((item) => item.message === `decap saved ${hookNotes[0].name}`);
+      assert.ok(hookPrompt, exported.prompts().map((item) => item.message).join("\n"));
+      assert.strictEqual(hookPrompt.action, "Fill in why");
+      assert.strictEqual(parseNote(hookNotes[0].note).why, "");
+      assert.ok(
+        exported.statusMessages().some((item) => item === "decap: nothing captured, this change was already captured"),
+        exported.statusMessages().join("\n"),
       );
+      assert.strictEqual(exported.prompts().length, 2);
       assert.strictEqual(exported.entries().some((item) => item.note.includes("young: true")), false);
       assert.ok(exported.skips().includes("young"), exported.skips().join(","));
       const offer = exported.reviews().find((item) => item.action === "Review anyway");
@@ -227,6 +240,50 @@ suite("decap extension", () => {
       );
       assert.strictEqual(status.some((item) => item.includes("fill in why")), false);
       assert.strictEqual(exported.reviews().some((item) => item.action === "Review anyway"), false);
+    });
+    return;
+  }
+
+  if (process.env.DECAP_LAYOUT === "status-save") {
+    test("a capture with no reason leaves fill in why on the status bar", async function () {
+      this.timeout(60000);
+      const exported = await api();
+      await exported.whenWatching();
+      git(["add", "-A"]);
+      git(["-c", "commit.gpgsign=false", "commit", "-m", "use sum"]);
+      await exported.refreshGit();
+      await waitFor(
+        () => exported.entries().length === 1 && exported.pendingText().includes("decap: fill in why"),
+        "the fill in why status item",
+      );
+      const entry = exported.entries()[0];
+      assert.strictEqual(parseNote(entry.note).why, "");
+      assert.ok(exported.prompts().some((item) => item.action === "Fill in why"));
+      await exported.refreshGit();
+      assert.strictEqual(exported.entries().length, 1);
+    });
+    return;
+  }
+
+  if (process.env.DECAP_LAYOUT === "status-reload") {
+    test("reloading the window brings fill in why back while a reason is missing", async function () {
+      this.timeout(45000);
+      const exported = await api();
+      await exported.whenWatching();
+      await waitFor(
+        () => exported.pendingText().includes("decap: fill in why"),
+        "the restored fill in why status item",
+      );
+      assert.strictEqual(exported.entries().length, 1);
+      const entry = exported.entries()[0];
+      assert.strictEqual(parseNote(entry.note).why, "");
+      assert.ok(entry.note.includes("file: src/app.py"), entry.note);
+      const page = exported.standaloneHtml();
+      assert.ok(page.includes("src/app.py"), page);
+      assert.match(page, /<textarea id="why"[^>]*><\/textarea>/);
+      assert.strictEqual(page.includes("<span class=\"why\">"), false);
+      assert.strictEqual(exported.prompts().length, 0);
+      assert.ok(exported.pendingText().includes("decap: fill in why"), exported.pendingText());
     });
     return;
   }
@@ -396,6 +453,67 @@ suite("decap extension", () => {
     assert.ok(exported.lastHtml().includes("The sum was wrong."), exported.lastHtml());
     assert.strictEqual(pendingCount(exported.pendingText()), before - 1);
     assert.ok(exported.panelHtml().includes("Saved."));
+  });
+
+  test("the form shows how many are waiting and then moves on", async function () {
+    this.timeout(30000);
+    const exported = await api();
+    await exported.whenWatching();
+    const past = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const src = path.join(root(), "src");
+    fs.writeFileSync(path.join(src, "one.py"), "def one():\n    return 1\n");
+    fs.writeFileSync(path.join(src, "two.py"), "def two():\n    return 2\n");
+    execFileSync("git", ["add", "src/one.py", "src/two.py"], { cwd: root() });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "add pair"], {
+      cwd: root(),
+      env: { ...process.env, GIT_AUTHOR_DATE: past, GIT_COMMITTER_DATE: past },
+    });
+    fs.writeFileSync(path.join(src, "one.py"), "def one():\n    return 3\n");
+    fs.writeFileSync(path.join(src, "two.py"), "def two():\n    return 4\n");
+    git(["add", "src/one.py", "src/two.py"]);
+    git(["-c", "commit.gpgsign=false", "commit", "-m", "change pair"]);
+    await exported.refreshGit();
+    await waitFor(() => {
+      const found = exported.entries().filter((entry) => entry.note.includes("file: src/one.py") || entry.note.includes("file: src/two.py"));
+      return found.length === 2;
+    }, "two captures");
+    const pair = exported.entries().filter((entry) => entry.note.includes("file: src/one.py") || entry.note.includes("file: src/two.py"));
+    await waitFor(
+      () => pair.every((entry) => exported.visiblePrompts().some((item) => item.message === `decap saved ${entry.name}` && item.action === "Fill in why")),
+      "two fill in why notices",
+    );
+    await vscode.commands.executeCommand("decap.fillWhy");
+    const panel = exported.panelHtml();
+    assert.ok(panel.includes("1 more to fill in."), panel);
+    assert.strictEqual(panel.includes("Saved."), false);
+    assert.ok(fontSize(panel, "h1.title") > fontSize(panel, "body"), panel);
+    assert.match(panel, /textarea:focus\s*\{[^}]*outline:\s*1px solid var\(--vscode-focusBorder\)/);
+    const headingMatch = panel.match(/<h1 class="title">([^<]*)<\/h1>/);
+    assert.ok(headingMatch, panel);
+    const current = pair.find((entry) => headingMatch[1].includes(path.basename(parseNote(entry.note).file)));
+    assert.ok(current, headingMatch[1]);
+    const other = pair.find((entry) => entry.folder !== current.folder);
+    assert.ok(other);
+    exported.panelMessage({ type: "save", text: "The first reason." });
+    assert.strictEqual(exported.visiblePrompts().some((item) => item.message === `decap saved ${current.name}`), false);
+    assert.ok(exported.visiblePrompts().some((item) => item.message === `decap saved ${other.name}` && item.action === "Fill in why"));
+    const moved = exported.panelHtml();
+    const movedHeading = moved.match(/<h1 class="title">([^<]*)<\/h1>/);
+    assert.ok(movedHeading, moved);
+    assert.ok(movedHeading[1].includes(path.basename(parseNote(other.note).file)), movedHeading[1]);
+    assert.strictEqual(movedHeading[1].includes(path.basename(parseNote(current.note).file)), false);
+    assert.ok(moved.includes("Saved. 1 more to fill in."), moved);
+    exported.openPrompt(current.folder);
+    const stayed = exported.panelHtml();
+    const stayedHeading = stayed.match(/<h1 class="title">([^<]*)<\/h1>/);
+    assert.ok(stayedHeading, stayed);
+    assert.ok(stayedHeading[1].includes(path.basename(parseNote(other.note).file)), stayedHeading[1]);
+    assert.strictEqual(stayedHeading[1].includes(path.basename(parseNote(current.note).file)), false);
+    exported.panelMessage({ type: "save", text: "The second reason." });
+    assert.ok(exported.panelHtml().includes("Saved."));
+    assert.strictEqual(exported.visiblePrompts().some((item) => item.message === `decap saved ${other.name}`), false);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    assert.ok(exported.panelHtml().includes("Saved."), exported.panelHtml());
   });
 
   test("note.md opens in the text editor", async () => {
@@ -576,6 +694,17 @@ suite("decap extension", () => {
     const notes = exported.entries().filter((entry) => entry.note.includes(`change: ${OLD_KEY}`));
     assert.strictEqual(notes.length, 1);
     assert.strictEqual(exported.entries().length, before + 1);
+    await waitFor(
+      () => exported.prompts().some((item) => item.message === "decap saved from-hook" && item.action === "Fill in why"),
+      "a fill in why prompt for the hook capture",
+    );
+    assert.ok(exported.pendingText().includes("decap: fill in why"), exported.pendingText());
+    assert.ok(
+      exported.statusMessages().some((item) => item === "decap: nothing captured, this change was already captured"),
+      exported.statusMessages().join("\n"),
+    );
+    assert.strictEqual(parseNote(notes[0].note).why, "");
+    assert.strictEqual(exported.entries().filter((entry) => entry.note.includes(`change: ${OLD_KEY}`)).length, 1);
   });
 
   test("the decision list shows a saved why and search drops the other row", async () => {

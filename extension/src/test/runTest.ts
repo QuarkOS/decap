@@ -133,6 +133,11 @@ async function main(): Promise<void> {
   const rebase = fs.mkdtempSync(path.join(os.tmpdir(), "decap-rebase-"));
   prepareRebaseRepo(rebase);
   await launch(rebase, { DECAP_LAYOUT: "rebase" });
+
+  const reload = fs.mkdtempSync(path.join(os.tmpdir(), "decap-reload-"));
+  prepareRepo(reload);
+  await launch(reload, { DECAP_LAYOUT: "status-save" });
+  await launch(reload, { DECAP_LAYOUT: "status-reload" });
 }
 
 main().catch((err: unknown) => {

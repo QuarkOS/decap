@@ -20,19 +20,19 @@ Install the extension and open a folder that contains a git repository. The repo
 
 `decap: Show log` opens the decap output channel. It records each repository and, for every new commit, either the capture or the reason nothing was saved.
 
-`decap: Fill in why` opens a form for the newest capture from this session that still has no reason.
+`decap: Fill in why` opens a form for a capture that still has no reason.
 
 `decap: Review last commit` captures HEAD even when the lines are younger than 12 hours. It says when the commit only added lines, is a merge, or is the first commit. If that change was already captured, it opens the form that is already there.
 
 ## When nothing is captured
 
-A commit that does not change an old line leaves a status bar message for 20 seconds. The message names the reason. A line younger than 12 hours, a commit that only adds lines, a merge, and a change that was already captured each get their own reason. When the only reason is age, a notification says how old the lines are and offers Review anyway. An age under a minute reads less than a minute, on the notification, the images, and the form. The same short sentence is the status bar message, and clicking it reviews the commit. Review anyway writes the capture, marks the note `young: true`, and opens Fill in why without a second notification. A change that was already reviewed does not offer Review anyway. A later click opens the form that is already there. A later normal capture of that same change writes nothing.
+A commit that does not change an old line leaves a status bar message for 20 seconds. The message names the reason. A line younger than 12 hours, a commit that only adds lines, a merge, and a change that was already captured each get their own reason. When the only reason is age, a notification says how old the lines are and offers Review anyway. An age under a minute reads less than a minute, on the notification, the images, and the form. The same short sentence is the status bar message, and clicking it reviews the commit. Review anyway writes the capture, marks the note `young: true`, and opens Fill in why without a second notification. A change that was already reviewed does not offer Review anyway. A later click opens the form that is already there. A later normal capture of that same change writes nothing. If a capture already exists and the reason is still empty, Fill in why still appears.
 
 ## Sidebar
 
 The Decisions view lists `.decisions` folders from the git repository, newest first. Before any capture it explains that a capture appears after you commit a change to an old line. Each row shows the folder, the file, and the first line of the reason. Typing in the search box keeps rows whose reason, file name, or age matches. Select one to see the before image and the after image stacked. Edit the Why box and leave the field to save `note.md`. The same text appears in the Fill in why form.
 
-A new capture shows a notification with Fill in why. That opens a form in the editor, focused on the reason, and selects the capture in the sidebar. The form shows the file name, the line range, how old the line was, a short commit hash, and the two images. Save stores the reason. If other captures from this session still need a reason, the form moves to the next one. Escape or closing the form leaves the reason empty. The status bar keeps `decap: fill in why` until a reason is saved.
+A new capture shows a notification with Fill in why. That opens a form in the editor, focused on the reason, and selects the capture in the sidebar. The file name is a heading. The form also shows the line range, how old the line was, a short commit hash, and the two images. When more than one reason is waiting, the form says how many are left. Save stores the reason. If other captures still need a reason, the form moves to the next one and the earlier notification closes. Saved stays on screen long enough to read. Escape or closing the form leaves the reason empty. The status bar keeps `decap: fill in why` until a reason is saved. Reloading the window brings that status item back while a reason is missing.
 
 `note.md` is a short heading, the reason you wrote, and the two images. The machine-readable fields stay in an HTML comment at the bottom. Opening that file from decap uses the text editor.
 

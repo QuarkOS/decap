@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.8
+
+Fill in why shows how many reasons are still waiting as soon as the form opens. Saving and moving to the next one closes the notification for the capture you left. The file name is a larger heading. Saved stays on screen long enough to read. The text box focus outline follows the editor theme.
+
+A change the command-line hook already saved still asks for a reason when that reason is empty. Reloading the window brings the fill in why status item back while a reason is missing.
+
 ## 0.1.7
 
 The decision list shows the first line of the reason on each row. Typing in the search box keeps rows that match that reason, the file name, or how old the change is.
