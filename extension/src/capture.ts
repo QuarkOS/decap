@@ -60,18 +60,81 @@ export function commitIsFresh(root: string, now = new Date()): boolean {
   return commitFreshness(root, now).fresh;
 }
 
-export function commitFreshness(root: string, now = new Date()): { fresh: boolean; detail: string } {
-  const result = git(root, ["show", "-s", "--format=%ct", "HEAD"]);
+/** The commit this editor last finished considering in one repository. */
+export interface SeenCommit {
+  commit: string;
+}
+
+export function resolveCommit(root: string, rev: string): string {
+  return gitText(root, ["rev-parse", rev]).trim();
+}
+
+export function commitDescendsFrom(root: string, ancestor: string, commit: string): boolean {
+  if (ancestor === commit) {
+    return false;
+  }
+  return git(root, ["merge-base", "--is-ancestor", ancestor, commit]).code === 0;
+}
+
+export function commitsSince(root: string, ancestor: string, commit: string): string[] {
+  const result = git(root, ["rev-list", "--reverse", `${ancestor}..${commit}`]);
+  if (result.code !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim() || "git command failed";
+    throw new Error(detail);
+  }
+  return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+}
+
+function seenFile(root: string): string {
+  const raw = gitText(root, ["rev-parse", "--git-path", "decap-seen.json"]).trim();
+  return path.isAbsolute(raw) ? raw : path.join(root, raw);
+}
+
+export function readSeenCommit(root: string): SeenCommit | undefined {
+  let text: string;
+  try {
+    text = fs.readFileSync(seenFile(root), "utf8");
+  } catch {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(text) as { commit?: unknown };
+    if (!parsed || typeof parsed.commit !== "string" || !/^[0-9a-f]{7,64}$/i.test(parsed.commit)) {
+      return undefined;
+    }
+    return { commit: parsed.commit };
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeSeenCommit(root: string, seen: SeenCommit): void {
+  const file = seenFile(root);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(seen)}\n`);
+  fs.rmSync(file, { force: true });
+  try {
+    fs.renameSync(tmp, file);
+  } catch {
+    fs.copyFileSync(tmp, file);
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
+export function commitFreshness(root: string, now = new Date(), rev = "HEAD"): { fresh: boolean; detail: string } {
+  const result = git(root, ["show", "-s", "--format=%ct", rev]);
+  const label = rev === "HEAD" ? "HEAD" : rev.slice(0, 7);
   if (result.code !== 0) {
     return { fresh: false, detail: `git failed: ${result.stderr.trim() || "unknown error"}` };
   }
   const stamp = Number(result.stdout.trim());
   if (!Number.isFinite(stamp)) {
-    return { fresh: false, detail: "HEAD has no committer time" };
+    return { fresh: false, detail: `${label} has no committer time` };
   }
   const age = Math.round(now.getTime() / 1000 - stamp);
   if (age >= FRESH_COMMIT_SECONDS) {
-    return { fresh: false, detail: `HEAD was committed ${age}s ago (older than ${FRESH_COMMIT_SECONDS}s), so it is not a new commit` };
+    return { fresh: false, detail: `${label} was committed ${age}s ago (older than ${FRESH_COMMIT_SECONDS}s), so it is not a new commit` };
   }
   return { fresh: true, detail: `committed ${age}s ago` };
 }
@@ -199,6 +262,7 @@ export async function captureDetailed(input: {
   fontFile: string;
   now?: Date;
   anyAge?: boolean;
+  rev?: string;
 }): Promise<CaptureResult> {
   const now = input.now ?? new Date();
   const root = toplevel(input.start);
@@ -207,23 +271,24 @@ export async function captureDetailed(input: {
   let configured: number | undefined;
   let commit: string;
   if (input.source === "commit") {
-    if (revExists(root, "HEAD^2")) {
-      return { root, commit: "HEAD", written: [], skipped: "merge" };
+    const rev = input.rev ?? "HEAD";
+    if (revExists(root, `${rev}^2`)) {
+      return { root, commit: input.rev ?? "HEAD", written: [], skipped: "merge" };
     }
-    if (!revExists(root, "HEAD^")) {
-      return { root, commit: "HEAD", written: [], skipped: "first" };
+    if (!revExists(root, `${rev}^`)) {
+      return { root, commit: input.rev ?? "HEAD", written: [], skipped: "first" };
     }
-    revs = ["HEAD^", "HEAD"];
+    revs = [`${rev}^`, rev];
     configured = minAgeMs(root);
     minAge = input.anyAge ? 0 : configured;
-    commit = gitText(root, ["rev-parse", "HEAD"]).trim();
+    commit = gitText(root, ["rev-parse", rev]).trim();
   } else {
     revs = ["HEAD"];
     minAge = undefined;
     configured = undefined;
     commit = "uncommitted";
   }
-  const blameRev = input.source === "commit" ? "HEAD^" : "HEAD";
+  const blameRev = input.source === "commit" ? `${input.rev ?? "HEAD"}^` : "HEAD";
   const cache = new Map<string, Map<number, number>>();
   const entries = parseDiff(diff(root, revs));
   const blameOf = (filePath: string) => {
