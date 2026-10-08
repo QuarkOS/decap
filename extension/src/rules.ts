@@ -261,6 +261,9 @@ export function ageLabel(ageMs: number | undefined): string {
     return "";
   }
   const seconds = Math.max(0, Math.floor(ageMs / 1000));
+  if (seconds < 60) {
+    return "less than a minute";
+  }
   let count: number;
   let unit: string;
   if (seconds < 3600) {
@@ -371,7 +374,7 @@ function header(filePath: string, lineSpan: string, label: string): string {
   return `${filePath}  lines ${lineSpan}${lived}`;
 }
 
-function decision(hunk: TextHunk, key: string, age: number | undefined, commit: string): Decision {
+function decision(hunk: TextHunk, key: string, age: number | undefined, commit: string, young: boolean): Decision {
   const shaped = sides(hunk);
   const label = ageLabel(age);
   const slugBody = hunk.path.replace(/[^A-Za-z0-9._-]/g, "_");
@@ -384,6 +387,7 @@ function decision(hunk: TextHunk, key: string, age: number | undefined, commit: 
     age: label,
     change: key,
     why: "",
+    young,
   });
   return {
     key,
@@ -408,6 +412,7 @@ export function selectDecisions(input: {
   minAgeMs: number | undefined;
   captured: Set<string>;
   now: Date;
+  markYoungBelowMs?: number;
 }): Decision[] {
   const seen = new Set(input.captured);
   const chosen: Decision[] = [];
@@ -425,7 +430,8 @@ export function selectDecisions(input: {
       continue;
     }
     seen.add(key);
-    chosen.push(decision(entry.hunk, key, age, input.commit));
+    const young = input.markYoungBelowMs !== undefined && age !== undefined && age < input.markYoungBelowMs;
+    chosen.push(decision(entry.hunk, key, age, input.commit, young));
   }
   return chosen;
 }

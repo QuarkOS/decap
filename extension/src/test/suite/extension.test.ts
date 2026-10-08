@@ -18,6 +18,9 @@ interface Api {
   refreshGit: () => Promise<void>;
   prompts: () => { message: string; action: string }[];
   notices: () => string[];
+  reviews: () => { message: string; action: string }[];
+  reviewNotes: () => string[];
+  reviewAnyway: () => Promise<void>;
   statusMessages: () => string[];
   skips: () => string[];
   pendingText: () => string;
@@ -137,6 +140,13 @@ suite("decap extension", () => {
     assert.ok(readable.includes("![before](before.png)"));
     assert.ok(readable.includes("![after](after.png)"));
     assert.strictEqual(noteKey(readable), "abcdef");
+    assert.strictEqual(readable.includes("young:"), false);
+    const marked = readable.replace("change: abcdef\n", "change: abcdef\nyoung: true\n");
+    assert.strictEqual(parseNote(marked).young, true);
+    const keptYoung = applyWhy(marked, "Reviewed early.");
+    assert.ok(keptYoung.includes("young: true"));
+    assert.ok(keptYoung.includes("Reviewed early."));
+    assert.strictEqual(noteKey(keptYoung), "abcdef");
     const saved = applyWhy(readable, "The sum was wrong.");
     assert.ok(saved.includes("The sum was wrong."));
     assert.strictEqual(saved.split("<!--")[0].includes("change:"), false);
@@ -181,6 +191,13 @@ suite("decap extension", () => {
     assert.ok(commands.includes("decap.openDecisions"));
     assert.ok(commands.includes("decap.showLog"));
     assert.ok(commands.includes("decap.fillWhy"));
+    assert.ok(commands.includes("decap.reviewLast"));
+    assert.ok(commands.includes("decap.reviewAnyway"));
+    const contributed = vscode.extensions.getExtension("quarkos.decap")?.packageJSON.contributes.commands as { command: string; title: string }[];
+    const reviewLast = contributed.find((item) => item.command === "decap.reviewLast");
+    assert.ok(reviewLast);
+    assert.strictEqual(reviewLast.title, "decap: Review last commit");
+    assert.strictEqual(contributed.some((item) => item.command === "decap.reviewAnyway"), false);
     assert.strictEqual(commands.includes("decap.setup"), false);
     assert.strictEqual(commands.includes("decap.installHook"), false);
     const html = exported.standaloneHtml();
@@ -298,13 +315,84 @@ suite("decap extension", () => {
     await exported.refreshGit();
     await waitFor(() => exported.skips().includes("young"), "the young skip");
     assert.strictEqual(exported.entries().length, before);
-    const status = exported.statusMessages().find((item) => item.includes("younger than 12 hours"));
+    const offer = exported.reviews().find((item) => item.action === "Review anyway");
+    assert.ok(offer, exported.reviews().map((item) => item.message).join("\n"));
+    assert.match(offer.message, /^Nothing captured: these lines are (less than a minute old|only \d+ (minute|hour|day)s? old)$/);
+    const status = exported.statusMessages().find((item) => item === offer.message);
     assert.ok(status, exported.statusMessages().join("\n"));
-    assert.ok(status.startsWith("decap: nothing captured, "));
-    const notice = exported.notices().find((item) => item.includes("git config decap.minAge 0"));
-    assert.ok(notice, exported.notices().join("\n"));
-    assert.ok(notice.includes("at least 12 hours old"));
-    assert.strictEqual(exported.notices().length, 1);
+    assert.strictEqual(exported.statusMessages().some((item) => item.includes("younger than 12 hours")), false);
+    assert.strictEqual(exported.notices().length, 0);
+  });
+
+  test("Review anyway writes the young commit once and opens the form", async function () {
+    this.timeout(60000);
+    const exported = await api();
+    const before = exported.entries().length;
+    const offer = exported.reviews().at(-1);
+    assert.ok(offer);
+    assert.strictEqual(offer.action, "Review anyway");
+    const promptsBefore = exported.prompts().length;
+    await exported.reviewAnyway();
+    await waitFor(
+      () => exported.entries().some((entry) => entry.note.includes("young: true")),
+      "a young capture",
+    );
+    assert.strictEqual(exported.prompts().length, promptsBefore);
+    const entry = exported.entries().find((item) => item.note.includes("young: true"));
+    assert.ok(entry);
+    assert.ok(entry.note.includes("file: src/app.py"), entry.note);
+    const age = entry.note.match(/^age: (.+)$/m);
+    assert.ok(age, entry.note);
+    assert.match(age[1], /^(less than a minute|\d+ minutes?)$/);
+    assert.strictEqual(entry.note.includes("0 minutes"), false);
+    assert.ok(fs.statSync(entry.before).size > 500);
+    assert.ok(fs.statSync(entry.after).size > 500);
+    const panel = exported.panelHtml();
+    assert.ok(panel.includes(WHY_PLACEHOLDER), panel);
+    assert.ok(panel.includes(age[1]), panel);
+    assert.strictEqual(panel.includes("0 minutes"), false);
+    assert.ok(panel.includes("why.focus()"), panel);
+    assert.ok(panel.includes('event.data.type === "focus"'), panel);
+    assert.strictEqual(exported.entries().length, before + 1);
+    const again = exported.entries().length;
+    await exported.reviewAnyway();
+    assert.strictEqual(exported.entries().length, again);
+    assert.strictEqual(exported.prompts().length, promptsBefore);
+    assert.ok(exported.reviewNotes().some((item) => item === "Opened the form for this capture."));
+    assert.ok(exported.panelHtml().includes(WHY_PLACEHOLDER));
+  });
+
+  test("a young change that is already captured does not offer Review anyway", async function () {
+    this.timeout(30000);
+    const exported = await api();
+    const reviewsBefore = exported.reviews().length;
+    const youngBefore = exported.skips().filter((item) => item === "young").length;
+    const capturedBefore = exported.skips().filter((item) => item === "captured").length;
+    const key = changeKey("commit", {
+      path: "src/watch.py",
+      oldStart: 1,
+      newStart: 1,
+      lines: [
+        { kind: "removed", text: "    return 1" },
+        { kind: "added", text: "    return 2" },
+      ],
+    });
+    const dir = path.join(root(), ".decisions", "already");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "note.md"),
+      `# src/watch.py lines 2\n\n![before](before.png)\n![after](after.png)\n\n<!-- decap\ncommit: abc\nfile: src/watch.py\nlines: 2\nage: less than a minute\nchange: ${key}\nyoung: true\n-->\n`,
+    );
+    fs.writeFileSync(path.join(root(), "src", "watch.py"), "def watch():\n    return 2\n");
+    git(["add", "src/watch.py"]);
+    git(["-c", "commit.gpgsign=false", "commit", "-m", "watch again"]);
+    await exported.refreshGit();
+    await waitFor(
+      () => exported.skips().filter((item) => item === "captured").length > capturedBefore,
+      "a captured young skip",
+    );
+    assert.strictEqual(exported.reviews().length, reviewsBefore);
+    assert.strictEqual(exported.skips().filter((item) => item === "young").length, youngBefore);
   });
 
   test("a commit that only adds lines is skipped as added-only", async () => {
@@ -321,6 +409,11 @@ suite("decap extension", () => {
     assert.ok(status, exported.statusMessages().join("\n"));
     assert.ok(status.startsWith("decap: nothing captured, "));
     assert.strictEqual(exported.notices().length, notices);
+    const notes = exported.reviewNotes().length;
+    await vscode.commands.executeCommand("decap.reviewLast");
+    await waitFor(() => exported.reviewNotes().length > notes, "a review of HEAD");
+    assert.strictEqual(exported.reviewNotes().at(-1), "Nothing to review: this commit only added new lines.");
+    assert.strictEqual(exported.entries().length, before);
   });
 
   test("snap captures the working tree", async () => {

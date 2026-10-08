@@ -5,6 +5,7 @@ export interface Note {
   lines: string;
   age: string;
   change: string;
+  young: boolean;
   why: string;
 }
 
@@ -14,6 +15,7 @@ const EMPTY: Omit<Note, "format" | "why"> = {
   lines: "",
   age: "",
   change: "",
+  young: false,
 };
 
 function fieldsOf(block: string): Omit<Note, "format" | "why"> {
@@ -31,6 +33,7 @@ function fieldsOf(block: string): Omit<Note, "format" | "why"> {
     lines: found.lines ?? "",
     age: found.age ?? "",
     change: found.change ?? "",
+    young: found.young === "true",
   };
 }
 
@@ -77,6 +80,7 @@ export function renderNote(note: Note): string {
     `lines: ${note.lines}\n` +
     `age: ${note.age}\n` +
     `change: ${note.change}\n` +
+    (note.young ? "young: true\n" : "") +
     "-->\n"
   );
 }
