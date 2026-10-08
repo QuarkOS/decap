@@ -185,11 +185,13 @@ export async function captureDetailed(input: {
   source: "commit" | "worktree";
   fontFile: string;
   now?: Date;
+  anyAge?: boolean;
 }): Promise<CaptureResult> {
   const now = input.now ?? new Date();
   const root = toplevel(input.start);
   let revs: string[];
   let minAge: number | undefined;
+  let configured: number | undefined;
   let commit: string;
   if (input.source === "commit") {
     if (revExists(root, "HEAD^2")) {
@@ -199,11 +201,13 @@ export async function captureDetailed(input: {
       return { root, commit: "HEAD", written: [], skipped: "first" };
     }
     revs = ["HEAD^", "HEAD"];
-    minAge = minAgeMs(root);
+    configured = minAgeMs(root);
+    minAge = input.anyAge ? 0 : configured;
     commit = gitText(root, ["rev-parse", "HEAD"]).trim();
   } else {
     revs = ["HEAD"];
     minAge = undefined;
+    configured = undefined;
     commit = "uncommitted";
   }
   const blameRev = input.source === "commit" ? "HEAD^" : "HEAD";
@@ -219,10 +223,10 @@ export async function captureDetailed(input: {
       cache.set(filePath, parsed);
       return parsed;
   };
-  const select = (minAgeMs: number | undefined, captured: Set<string>) => selectDecisions({
-    entries, blameOf, source: input.source, commit, minAgeMs, captured, now,
+  const select = (gate: number | undefined, captured: Set<string>, markYoungBelowMs?: number) => selectDecisions({
+    entries, blameOf, source: input.source, commit, minAgeMs: gate, captured, now, markYoungBelowMs,
   });
-  const chosen = select(minAge, capturedKeys(root));
+  const chosen = select(minAge, capturedKeys(root), input.anyAge ? configured : undefined);
   const written: string[] = [];
   for (const decision of chosen) {
     written.push(await publish(decision, root, now, input.fontFile));
@@ -231,7 +235,7 @@ export async function captureDetailed(input: {
     root,
     commit,
     written,
-    minAgeHours: minAge === undefined ? undefined : minAge / 3600000,
+    minAgeHours: configured === undefined ? undefined : configured / 3600000,
   };
   if (written.length > 0) {
     return result;

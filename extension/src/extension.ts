@@ -16,6 +16,28 @@ function oldLabel(ageMs: number): string {
   return ageMs < 60 * 60 * 1000 ? "changed less than an hour ago" : `${ageLabel(ageMs)} old`;
 }
 
+function offerAge(ageMs: number): string {
+  if (ageMs < 60 * 1000) {
+    return "less than a minute";
+  }
+  return ageLabel(ageMs);
+}
+
+export function reviewEmpty(result: CaptureResult): string {
+  switch (result.skipped) {
+    case "added-only":
+      return "Nothing to review: this commit only added new lines.";
+    case "merge":
+      return "Nothing to review: merge commits are skipped.";
+    case "first":
+      return "Nothing to review: the first commit has nothing to compare against.";
+    case "captured":
+      return "Nothing to review: this change was already captured.";
+    default:
+      return "Nothing to review: this commit has no text changes decap tracks.";
+  }
+}
+
 export function skipText(result: CaptureResult): string {
   const hours = result.minAgeHours ?? 12;
   switch (result.skipped) {
@@ -37,8 +59,11 @@ export function skipText(result: CaptureResult): string {
 export async function activate(context: vscode.ExtensionContext) {
   const prompts: { message: string; action: string }[] = [];
   const notices: string[] = [];
+  const reviews: { message: string; action: string }[] = [];
+  const reviewNotes: string[] = [];
   const statusMessages: string[] = [];
   const skips: string[] = [];
+  let lastYoungRoot: string | undefined;
   const output = vscode.window.createOutputChannel("decap");
   const log = (line: string) => output.appendLine(`[${new Date().toLocaleTimeString()}] ${line}`);
   log(`decap ${context.extension.packageJSON.version} active in ${workspaceRoot() ?? "a window with no folder"}`);
@@ -50,7 +75,11 @@ export async function activate(context: vscode.ExtensionContext) {
   const pending: string[] = [];
   const pendingItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   pendingItem.command = "decap.fillWhy";
-  context.subscriptions.push(output, pendingItem);
+  const youngItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 40);
+  youngItem.command = "decap.reviewAnyway";
+  youngItem.tooltip = "Review anyway";
+  let youngTimer: ReturnType<typeof setTimeout> | undefined;
+  context.subscriptions.push(output, pendingItem, youngItem);
 
   function prime(root: string) {
     const key = pathKey(root);
@@ -110,6 +139,42 @@ export async function activate(context: vscode.ExtensionContext) {
     updatePending();
   }
 
+  async function reviewCommit(start: string | undefined): Promise<void> {
+    if (!start) {
+      const message = "Open a folder before reviewing a commit.";
+      reviewNotes.push(message);
+      if (process.env.DECAP_TEST !== "1") {
+        void vscode.window.showWarningMessage(message);
+      }
+      return;
+    }
+    let result: CaptureResult;
+    try {
+      result = await captureDetailed({ start, source: "commit", fontFile, anyAge: true });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message.trim() : "";
+      const message = detail ? `decap review failed. ${detail}` : "decap review failed.";
+      log(message);
+      reviewNotes.push(message);
+      if (process.env.DECAP_TEST !== "1") {
+        void vscode.window.showErrorMessage(message);
+      }
+      return;
+    }
+    if (result.written.length > 0) {
+      log(`reviewed ${result.commit.slice(0, 7)} in ${result.root}: ${result.written.map((item) => path.basename(item)).join(", ")}`);
+      announce(result.root);
+      fillWhy(result.written[0]);
+      return;
+    }
+    const message = reviewEmpty(result);
+    reviewNotes.push(message);
+    log(message);
+    if (process.env.DECAP_TEST !== "1") {
+      void vscode.window.showInformationMessage(message);
+    }
+  }
+
   async function onCommit(root: string) {
     const fresh = commitFreshness(root);
     if (!fresh.fresh) {
@@ -131,22 +196,30 @@ export async function activate(context: vscode.ExtensionContext) {
     if (result.skipped) {
       skips.push(result.skipped);
     }
-    context.subscriptions.push(vscode.window.setStatusBarMessage(`$(info) ${status}`, 20000));
-    if (result.skipped !== "young" || context.globalState.get<boolean>("decap.youngNoticeShown")) {
-      return;
-    }
-    await context.globalState.update("decap.youngNoticeShown", true);
-    const hours = result.minAgeHours ?? 12;
-    const notice = `decap captured nothing from commit ${sha}: ${reason}. decap only records changes to lines that are at least ${hours} hours old. To capture younger lines in this repository, run: git config decap.minAge 0`;
-    notices.push(notice);
-    if (process.env.DECAP_TEST === "1") {
-      return;
-    }
-    void vscode.window.showInformationMessage(notice, "Show log").then((choice) => {
-      if (choice === "Show log") {
-        output.show(true);
+    if (result.skipped === "young") {
+      lastYoungRoot = root;
+      youngItem.text = `$(info) ${status}`;
+      youngItem.show();
+      if (youngTimer) {
+        clearTimeout(youngTimer);
       }
-    });
+      youngTimer = setTimeout(() => youngItem.hide(), 20000);
+      const review = {
+        message: `Nothing captured: these lines are only ${offerAge(result.oldestMs ?? 0)} old`,
+        action: "Review anyway",
+      };
+      reviews.push(review);
+      if (process.env.DECAP_TEST !== "1") {
+        void vscode.window.showInformationMessage(review.message, review.action).then((choice) => {
+          if (choice === review.action) {
+            void reviewCommit(root);
+          }
+        });
+      }
+      return;
+    }
+    youngItem.hide();
+    context.subscriptions.push(vscode.window.setStatusBarMessage(`$(info) ${status}`, 20000));
   }
 
   const watching = watchCommits(context, onCommit, {
@@ -166,6 +239,8 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("decap.snap", () => snap()),
     vscode.commands.registerCommand("decap.showLog", () => output.show(true)),
     vscode.commands.registerCommand("decap.fillWhy", () => (pending[0] ? fillWhy(pending[0]) : undefined)),
+    vscode.commands.registerCommand("decap.reviewAnyway", () => reviewCommit(lastYoungRoot ?? workspaceRoot())),
+    vscode.commands.registerCommand("decap.reviewLast", () => reviewCommit(workspaceRoot())),
     vscode.commands.registerCommand("decap.openNote", (uri: vscode.Uri) => openNoteAsText(uri)),
     vscode.commands.registerCommand("decap.openDecisions", async () => {
       await vscode.commands.executeCommand("decap.decisions.focus");
@@ -301,6 +376,9 @@ export async function activate(context: vscode.ExtensionContext) {
     refreshGit: () => watching.refresh(),
     prompts: () => prompts,
     notices: () => notices,
+    reviews: () => reviews,
+    reviewNotes: () => reviewNotes,
+    reviewAnyway: () => reviewCommit(lastYoungRoot ?? workspaceRoot()),
     statusMessages: () => statusMessages,
     skips: () => skips,
     pendingText: () => (pendingItem.text && pending.length ? pendingItem.text : ""),

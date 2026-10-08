@@ -22,9 +22,11 @@ Install the extension and open a folder that contains a git repository. The repo
 
 `decap: Fill in why` opens a form for the newest capture from this session that still has no reason.
 
+`decap: Review last commit` captures HEAD even when the lines are younger than 12 hours. It says when the commit only added lines, is a merge, is the first commit, or was already captured.
+
 ## When nothing is captured
 
-A commit that does not change an old line leaves a status bar message for 20 seconds. The message names the reason. A line younger than 12 hours, a commit that only adds lines, a merge, and a change that was already captured each get their own reason. The first time the lines are too new, a notification explains the 12 hour rule and how to set `git config decap.minAge 0` for that repository.
+A commit that does not change an old line leaves a status bar message for 20 seconds. The message names the reason. A line younger than 12 hours, a commit that only adds lines, a merge, and a change that was already captured each get their own reason. When the only reason is age, a notification says how old the lines are and offers Review anyway. That offer appears on every such commit. Clicking the status bar message does the same thing. Review anyway writes the capture with the real age, marks the note `young: true`, and opens Fill in why. A later normal capture of that same change writes nothing.
 
 ## Sidebar
 

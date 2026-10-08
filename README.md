@@ -16,7 +16,7 @@ In a repository, run `decap install`.
 
 The command adds a post-commit hook. If a hook file is already there, decap leaves it in place and appends its own block at the end.
 
-The hook captures a commit that changes or deletes a line last touched at least 12 hours ago. `git config decap.minAge 12` sets the hours. The default is 12.
+The hook captures a commit that changes or deletes a line last touched at least 12 hours ago. `git config decap.minAge 12` sets the hours. The default is 12. `decap hook --any-age` captures a younger commit and marks the note `young: true`. A later hook without the flag does not write that change again.
 
 ## Snap the working tree
 
@@ -55,13 +55,13 @@ npm install
 npx @vscode/vsce package
 ```
 
-That writes `decap-0.1.3.vsix`. The CI artifact is the same file.
+That writes `decap-0.1.4.vsix`. The CI artifact is the same file.
 
-In VS Code, open Extensions and choose Install from VSIX. From a terminal, run `code --install-extension decap-0.1.3.vsix`.
+In VS Code, open Extensions and choose Install from VSIX. From a terminal, run `code --install-extension decap-0.1.4.vsix`.
 
-In Cursor, use the same Install from VSIX action, or run `cursor --install-extension decap-0.1.3.vsix`.
+In Cursor, use the same Install from VSIX action, or run `cursor --install-extension decap-0.1.4.vsix`.
 
-Open a folder that contains a git repository. The repository can be that folder, or the folder directly inside it. Installing the extension is the whole setup. The editor does not need Python and does not install a hook. A commit that changes a line at least 12 hours old is captured while the window is open. Commits made while the editor is closed are not captured. A commit that is too new to capture says so in the status bar. `decap: Show log` opens the output channel. `pipx install .` from a checkout still installs the command-line tool for terminal-only use.
+Open a folder that contains a git repository. The repository can be that folder, or the folder directly inside it. Installing the extension is the whole setup. The editor does not need Python and does not install a hook. A commit that changes a line at least 12 hours old is captured while the window is open. Commits made while the editor is closed are not captured. A commit that is too new to capture says so in the status bar and offers Review anyway. `decap: Review last commit` captures HEAD at any age. `decap: Show log` opens the output channel. `pipx install .` from a checkout still installs the command-line tool for terminal-only use.
 
 `decap: Snap` captures the working tree. The default key is Alt+Shift+S. `decap: Open decisions` focuses the sidebar.
 
@@ -71,6 +71,6 @@ A new capture shows a notification with Fill in why. That opens a form in the ed
 
 ![Fill in why](extension/media/why-panel-dark.png)
 
-To publish on Open VSX, download the CI vsix and run `npx ovsx publish decap-0.1.3.vsix` with your own token. The Marketplace is a separate publisher account and `vsce publish`. This repository has no publish workflow and no publish token.
+To publish on Open VSX, download the CI vsix and run `npx ovsx publish decap-0.1.4.vsix` with your own token. The Marketplace is a separate publisher account and `vsce publish`. This repository has no publish workflow and no publish token.
 
 The plan is in [PLAN.md](PLAN.md).

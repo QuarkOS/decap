@@ -322,12 +322,12 @@ def _header(path: str, span: str, label: str) -> str:
     return f"{path}  lines {span}{lived}"
 
 
-def _decision(hunk: TextHunk, key: str, age: timedelta | None, commit: str) -> Decision:
+def _decision(hunk: TextHunk, key: str, age: timedelta | None, commit: str, young: bool = False) -> Decision:
     before, after, before_start, after_start, before_span, after_span = _sides(hunk)
     label = _age_label(age)
     slug = re.sub(r"[^A-Za-z0-9._-]", "_", hunk.path)
     note_span = before_span or after_span
-    note = _render_note(commit, hunk.path, note_span, label, key)
+    note = _render_note(commit, hunk.path, note_span, label, key, young)
     return Decision(
         key=key,
         slug=f"{slug}_{hunk.old_start}"[:60],
@@ -351,6 +351,7 @@ def select_decisions(
     min_age: timedelta | None,
     captured: frozenset[str],
     now: datetime,
+    mark_young_below: timedelta | None = None,
 ) -> tuple[Decision, ...]:
     if now.tzinfo is None or now.tzinfo.utcoffset(now) is None:
         raise ValueError("now must be timezone-aware")
@@ -367,7 +368,8 @@ def select_decisions(
         if key in seen:
             continue
         seen.add(key)
-        chosen.append(_decision(entry, key, age, commit))
+        young = mark_young_below is not None and age is not None and age < mark_young_below
+        chosen.append(_decision(entry, key, age, commit, young))
     return tuple(chosen)
 
 
@@ -574,8 +576,9 @@ def _captured(top: Path) -> frozenset[str]:
     return frozenset(keys)
 
 
-def _render_note(commit: str, file: str, lines: str, age: str, change: str) -> str:
+def _render_note(commit: str, file: str, lines: str, age: str, change: str, young: bool = False) -> str:
     title = f"# {file} lines {lines}" if lines else f"# {file}"
+    marker = "young: true\n" if young else ""
     return (
         f"{title}\n\n"
         "![before](before.png)\n"
@@ -586,6 +589,7 @@ def _render_note(commit: str, file: str, lines: str, age: str, change: str) -> s
         f"lines: {lines}\n"
         f"age: {age}\n"
         f"change: {change}\n"
+        f"{marker}"
         "-->\n"
     )
 
@@ -611,7 +615,7 @@ def _note_key(text: str) -> str | None:
     return None
 
 
-def run(start: Path, source: str, now: datetime | None = None) -> tuple[Path, ...]:
+def run(start: Path, source: str, now: datetime | None = None, any_age: bool = False) -> tuple[Path, ...]:
     if now is None:
         now = datetime.now(timezone.utc)
     if now.tzinfo is None or now.tzinfo.utcoffset(now) is None:
@@ -621,11 +625,14 @@ def run(start: Path, source: str, now: datetime | None = None) -> tuple[Path, ..
         if _rev_exists(start, "HEAD^2") or not _rev_exists(start, "HEAD^"):
             return ()
         diff = _diff(start, "HEAD^", "HEAD")
-        rev, min_age = "HEAD^", _min_age(start)
+        gate = _min_age(start)
+        rev, min_age = "HEAD^", (timedelta(0) if any_age else gate)
+        mark_young_below = gate if any_age else None
         commit = _git(start, "rev-parse", "HEAD").strip()
     elif source == "worktree":
         diff = _diff(start, "HEAD")
         rev, min_age, commit = "HEAD", None, "uncommitted"
+        mark_young_below = None
     else:
         raise ValueError("source must be commit or worktree")
     cache: dict[str, dict[int, int]] = {}
@@ -641,7 +648,7 @@ def run(start: Path, source: str, now: datetime | None = None) -> tuple[Path, ..
 
     chosen = select_decisions(
         parse_diff(diff), blame_of, source=source, commit=commit,
-        min_age=min_age, captured=_captured(top), now=now,
+        min_age=min_age, captured=_captured(top), now=now, mark_young_below=mark_young_below,
     )
     if not chosen:
         return ()
@@ -733,13 +740,15 @@ def _git_message(err: subprocess.CalledProcessError) -> str:
     return text or "git command failed"
 
 
-def _parse(argv: list[str]) -> tuple[str, tuple[Path, ...] | None] | None:
+def _parse(argv: list[str]) -> tuple[str, tuple[Path, ...] | None, bool] | None:
+    any_age = "--any-age" in argv
+    argv = [arg for arg in argv if arg != "--any-age"]
     if argv == ["install"]:
-        return ("install", None)
+        return ("install", None, False)
     if len(argv) == 5 and argv[0] == "install" and argv[1] == "--python" and argv[3] == "--script":
-        return ("install", (Path(argv[2]), Path(argv[4])))
+        return ("install", (Path(argv[2]), Path(argv[4])), False)
     if len(argv) == 1 and argv[0] in ("snap", "hook"):
-        return (argv[0], None)
+        return (argv[0], None, any_age)
     return None
 
 
@@ -748,10 +757,10 @@ def main(argv: list[str] | None = None) -> int:
         argv = sys.argv[1:]
     parsed = _parse(argv)
     if parsed is None:
-        print("usage: decap install [--python PATH --script PATH] | snap | hook", file=sys.stderr)
+        print("usage: decap install [--python PATH --script PATH] | snap [--any-age] | hook [--any-age]", file=sys.stderr)
         return 2
     start = Path.cwd()
-    command, runtime = parsed
+    command, runtime, any_age = parsed
     if command == "install":
         try:
             if runtime is None:
@@ -773,7 +782,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     source = "worktree" if command == "snap" else "commit"
     try:
-        folders = run(start, source)
+        folders = run(start, source, any_age=any_age)
         notify(folders)
         for folder in folders:
             print(folder)

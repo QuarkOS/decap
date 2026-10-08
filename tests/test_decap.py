@@ -22,6 +22,7 @@ from decap import (
     run,
     select_decisions,
     _note_key,
+    _parse,
 )
 
 ONE_HUNK = (
@@ -273,6 +274,44 @@ def test_legacy_note_keeps_the_change_key(tmp_path):
     assert _note_key(legacy) == key
     note_path.write_text(legacy, newline="\n")
     assert run(repo, "commit") == ()
+
+
+def test_any_age_marks_a_young_line_once(tmp_path):
+    repo = git_repo(tmp_path)
+    _app(repo, "keep\nold\ntail\n")
+    commit(repo, 1, "start")
+    _app(repo, "keep\nnew\ntail\n")
+    commit(repo, 0, "edit")
+    assert run(repo, "commit") == ()
+    folders = run(repo, "commit", any_age=True)
+    assert len(folders) == 1
+    note = (folders[0] / "note.md").read_text()
+    assert "young: true" in note.splitlines()
+    assert "age: 1 hour" in note.splitlines()
+    assert run(repo, "commit") == ()
+    assert run(repo, "commit", any_age=True) == ()
+
+
+def test_any_age_leaves_an_old_line_unmarked(tmp_path):
+    repo = git_repo(tmp_path)
+    _app(repo, "keep\nold\ntail\n")
+    commit(repo, 48, "start")
+    _app(repo, "keep\nnew\ntail\n")
+    commit(repo, 0, "edit")
+    folders = run(repo, "commit", any_age=True)
+    assert len(folders) == 1
+    note = (folders[0] / "note.md").read_text()
+    assert "young: true" not in note
+    assert "age: 2 days" in note.splitlines()
+    assert run(repo, "commit") == ()
+
+
+def test_parse_any_age_flag():
+    assert _parse(["hook", "--any-age"]) == ("hook", None, True)
+    assert _parse(["--any-age", "snap"]) == ("snap", None, True)
+    assert _parse(["hook"]) == ("hook", None, False)
+    assert _parse(["install"]) == ("install", None, False)
+    assert _parse(["nope"]) is None
 
 
 def test_fresh_line_commit_writes_nothing(tmp_path):
