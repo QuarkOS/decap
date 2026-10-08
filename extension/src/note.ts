@@ -98,6 +98,16 @@ export function applyWhy(text: string, why: string): string {
   return renderNote({ ...parseNote(text), why });
 }
 
+export function retargetNote(text: string, patch: { commit: string; lines?: string; change?: string }): string {
+  const note = parseNote(text);
+  return renderNote({
+    ...note,
+    commit: patch.commit,
+    lines: patch.lines ?? note.lines,
+    change: patch.change ?? note.change,
+  });
+}
+
 export function fileTitle(note: Note): string {
   const base = note.file.split(/[/\\]/).pop() || note.file || "capture";
   if (!note.lines) {

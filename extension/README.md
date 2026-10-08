@@ -10,7 +10,7 @@ The command-line tool in this repository is separate. It needs Python 3.11 or ne
 
 ## First run
 
-Install the extension and open a folder that contains a git repository. The repository can be that folder, or the folder directly inside it. There is no setup step. A commit that changes a line at least 12 hours old is saved under `.decisions` in the repository. That includes a commit made while the editor was closed.
+Install the extension and open a folder that contains a git repository. The repository can be that folder, or the folder directly inside it. There is no setup step. A commit that changes a line at least 12 hours old is saved under `.decisions` in the repository. That includes a commit made while the editor was closed. A rebase keeps a reason you already wrote. decap does not ask for that reason again.
 
 ## Commands
 

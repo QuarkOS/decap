@@ -236,6 +236,25 @@ export function changeKey(source: string, hunk: TextHunk): string {
   return createHash("sha256").update(text, "utf8").digest("hex").slice(0, 16);
 }
 
+/** File and changed lines, without line numbers. A rebase can move the lines and keep this. */
+export function bodyKey(hunk: TextHunk): string {
+  let text = `${hunk.path}\n`;
+  for (const [kind, sigil] of [["removed", "-"], ["added", "+"]] as const) {
+    for (const line of hunk.lines) {
+      if (line.kind === kind) {
+        text += `${sigil}${line.text}\n`;
+      }
+    }
+  }
+  return createHash("sha256").update(text, "utf8").digest("hex").slice(0, 16);
+}
+
+export function oldEnough(hunk: TextHunk, blame: Map<number, number>, minAgeMs: number | undefined, now: Date): boolean {
+  const removed = hunk.lines.some((line) => line.kind === "removed");
+  const age = removed ? hunkAge(hunk, blame, now) : undefined;
+  return !(minAgeMs !== undefined && (age === undefined || age < minAgeMs));
+}
+
 function hunkAge(hunk: TextHunk, blame: Map<number, number>, now: Date): number | undefined {
   let oldNo = hunk.oldStart;
   const times: number[] = [];
@@ -358,7 +377,12 @@ function sides(hunk: TextHunk): {
   };
 }
 
-function ignored(filePath: string): boolean {
+export function noteLines(hunk: TextHunk): string {
+  const shaped = sides(hunk);
+  return shaped.beforeSpan || shaped.afterSpan;
+}
+
+export function ignored(filePath: string): boolean {
   const name = filePath.split(/[/\\]/).pop() || filePath;
   return LOCK_NAMES.has(name) || name.endsWith(".lock") || SKIP_SUFFIXES.some((suffix) => filePath.endsWith(suffix));
 }
@@ -420,11 +444,11 @@ export function selectDecisions(input: {
     if (entry.type !== "hunk" || ignored(entry.hunk.path)) {
       continue;
     }
-    const removed = entry.hunk.lines.some((line) => line.kind === "removed");
-    const age = removed ? hunkAge(entry.hunk, input.blameOf(entry.hunk.path), input.now) : undefined;
-    if (input.minAgeMs !== undefined && (age === undefined || age < input.minAgeMs)) {
+    if (!oldEnough(entry.hunk, input.blameOf(entry.hunk.path), input.minAgeMs, input.now)) {
       continue;
     }
+    const removed = entry.hunk.lines.some((line) => line.kind === "removed");
+    const age = removed ? hunkAge(entry.hunk, input.blameOf(entry.hunk.path), input.now) : undefined;
     const key = changeKey(input.source, entry.hunk);
     if (seen.has(key)) {
       continue;

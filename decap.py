@@ -254,6 +254,22 @@ def _change_key(source: str, hunk: TextHunk) -> str:
     return hashlib.sha256("".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
+def _body_key(hunk: TextHunk) -> str:
+    """File and changed lines, without line numbers. A rebase can move the lines and keep this."""
+    parts = [f"{hunk.path}\n"]
+    for kind, sigil in ((Kind.REMOVED, "-"), (Kind.ADDED, "+")):
+        for line in hunk.lines:
+            if line.kind is kind:
+                parts.append(f"{sigil}{line.text}\n")
+    return hashlib.sha256("".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _old_enough(hunk: TextHunk, blame: Mapping[int, int], min_age: timedelta | None, now: datetime) -> bool:
+    removed = any(line.kind is Kind.REMOVED for line in hunk.lines)
+    age = _hunk_age(hunk, blame, now) if removed else None
+    return not (min_age is not None and (age is None or age < min_age))
+
+
 def _fit(lines: tuple[ShotLine, ...]) -> tuple[ShotLine, ...]:
     clipped = []
     for line in lines:
@@ -362,10 +378,10 @@ def select_decisions(
     for entry in entries:
         if not isinstance(entry, TextHunk) or _ignored(entry.path):
             continue
+        if not _old_enough(entry, blame_of(entry.path), min_age, now):
+            continue
         removed = any(line.kind is Kind.REMOVED for line in entry.lines)
         age = _hunk_age(entry, blame_of(entry.path), now) if removed else None
-        if min_age is not None and (age is None or age < min_age):
-            continue
         key = _change_key(source, entry)
         if key in seen:
             continue
@@ -578,43 +594,221 @@ def _captured(top: Path) -> frozenset[str]:
     return frozenset(keys)
 
 
-def _render_note(commit: str, file: str, lines: str, age: str, change: str, young: bool = False) -> str:
-    title = f"# {file} lines {lines}" if lines else f"# {file}"
-    marker = "young: true\n" if young else ""
+@dataclass
+class SavedWhy:
+    """A why already saved for one change. change is the existing hash."""
+
+    folder: Path | None
+    format: str
+    commit: str
+    file: str
+    lines: str
+    age: str
+    change: str
+    young: bool
+    why: str
+    text: str
+
+
+def _fields(block: str) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for line in block.split("\n"):
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        found[key.strip()] = value.strip()
+    return found
+
+
+def _parse_saved(text: str, folder: Path | None = None) -> SavedWhy:
+    note = text.replace("\r\n", "\n").replace("\r", "\n")
+    empty = {"commit": "", "file": "", "lines": "", "age": "", "change": "", "young": "false"}
+    if note.startswith("---\n"):
+        end = note.find("\n---\n", 3)
+        found = empty if end < 0 else {**empty, **_fields(note[4:end])}
+        marker = "\nWhy:\n"
+        at = note.find(marker)
+        why = "" if at < 0 else note[at + len(marker):].strip()
+        fmt = "legacy"
+    else:
+        comment_at = note.find("<!-- decap\n")
+        comment_end = note.find("\n-->", comment_at + 11) if comment_at >= 0 else -1
+        found = empty if comment_at < 0 or comment_end < 0 else {**empty, **_fields(note[comment_at + 11:comment_end])}
+        visible = (note if comment_at < 0 else note[:comment_at]).strip()
+        body = "\n".join(visible.split("\n")[1:]).strip()
+        why = re.sub(r"\n*!\[before\]\(before\.png\)\s*\n!\[after\]\(after\.png\)\s*$", "", body).strip()
+        fmt = "readable"
+    return SavedWhy(
+        folder=folder,
+        format=fmt,
+        commit=found.get("commit", ""),
+        file=found.get("file", ""),
+        lines=found.get("lines", ""),
+        age=found.get("age", ""),
+        change=found.get("change", ""),
+        young=found.get("young") == "true",
+        why=why,
+        text=note,
+    )
+
+
+def _render_saved(note: SavedWhy) -> str:
+    if note.format == "legacy":
+        why = f"{note.why.strip()}\n" if note.why.strip() else ""
+        return (
+            f"---\ncommit: {note.commit}\nfile: {note.file}\nlines: {note.lines}\n"
+            f"age: {note.age}\nchange: {note.change}\n---\n\nWhy:\n{why}"
+        )
+    title = f"# {note.file} lines {note.lines}" if note.lines else f"# {note.file}"
+    why = note.why.strip()
+    middle = f"\n{why}\n\n" if why else "\n"
+    young = "young: true\n" if note.young else ""
     return (
-        f"{title}\n\n"
+        f"{title}\n{middle}"
         "![before](before.png)\n"
         "![after](after.png)\n\n"
         "<!-- decap\n"
-        f"commit: {commit}\n"
-        f"file: {file}\n"
-        f"lines: {lines}\n"
-        f"age: {age}\n"
-        f"change: {change}\n"
-        f"{marker}"
+        f"commit: {note.commit}\n"
+        f"file: {note.file}\n"
+        f"lines: {note.lines}\n"
+        f"age: {note.age}\n"
+        f"change: {note.change}\n"
+        f"{young}"
         "-->\n"
     )
 
 
+def _render_note(commit: str, file: str, lines: str, age: str, change: str, young: bool = False) -> str:
+    return _render_saved(SavedWhy(
+        folder=None, format="readable", commit=commit, file=file, lines=lines,
+        age=age, change=change, young=young, why="", text="",
+    ))
+
+
 def _note_key(text: str) -> str | None:
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    block = None
-    if text.startswith("---\n"):
-        end = text.find("\n---\n", 3)
-        if end >= 0:
-            block = text[4:end]
-    else:
-        start = text.find("<!-- decap\n")
-        end = text.find("\n-->", start + 11) if start >= 0 else -1
-        if start >= 0 and end >= 0:
-            block = text[start + len("<!-- decap\n"):end]
-    if block is None:
-        return None
-    for line in block.split("\n"):
-        if line.startswith("change:"):
-            value = line.split(":", 1)[1].strip()
-            return value or None
-    return None
+    change = _parse_saved(text).change
+    return change or None
+
+
+def _retarget_note(text: str, commit: str, lines: str | None = None, change: str | None = None) -> str:
+    saved = _parse_saved(text)
+    saved.commit = commit
+    if lines is not None:
+        saved.lines = lines
+    if change is not None:
+        saved.change = change
+    return _render_saved(saved)
+
+
+def _load_saved(top: Path) -> list[SavedWhy]:
+    root = top / ".decisions"
+    if not root.is_dir():
+        return []
+    found: list[SavedWhy] = []
+    for child in root.iterdir():
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        note = child / "note.md"
+        if not note.is_file():
+            continue
+        text = note.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        saved = _parse_saved(text, child)
+        if saved.change:
+            found.append(saved)
+    return found
+
+
+def _write_saved(folder: Path, text: str) -> None:
+    dest = folder / "note.md"
+    tmp = folder / f".note-{os.getpid()}.tmp"
+    tmp.write_text(text, encoding="utf-8", newline="\n")
+    os.replace(tmp, dest)
+
+
+def _commit_was_rewritten(start: Path, previous: str, current: str) -> bool:
+    if not previous or previous == current or previous == "uncommitted":
+        return False
+    if not _rev_exists(start, previous):
+        return True
+    try:
+        _git(start, "merge-base", "--is-ancestor", previous, current)
+    except subprocess.CalledProcessError:
+        return True
+    return False
+
+
+def _change_bodies(start: Path, commit: str) -> dict[str, str]:
+    if not _rev_exists(start, commit) or not _rev_exists(start, f"{commit}^"):
+        return {}
+    found: dict[str, str] = {}
+    for entry in parse_diff(_diff(start, f"{commit}^", commit)):
+        if not isinstance(entry, TextHunk) or _ignored(entry.path):
+            continue
+        found[_change_key("commit", entry)] = _body_key(entry)
+    return found
+
+
+def _note_lines(hunk: TextHunk) -> str:
+    _before, _after, _before_start, _after_start, before_span, after_span = _sides(hunk)
+    return before_span or after_span
+
+
+def _keep_saved_why(
+    start: Path,
+    top: Path,
+    entries: tuple[DiffEntry, ...],
+    blame_of: Callable[[str], Mapping[int, int]],
+    *,
+    commit: str,
+    min_age: timedelta | None,
+    now: datetime,
+) -> None:
+    saved = _load_saved(top)
+    if not saved:
+        return
+    claimed: set[Path] = set()
+    bodies: dict[str, dict[str, str]] = {}
+
+    def bodies_for(previous: str) -> dict[str, str]:
+        if previous not in bodies:
+            bodies[previous] = _change_bodies(start, previous)
+        return bodies[previous]
+
+    for entry in entries:
+        if not isinstance(entry, TextHunk) or _ignored(entry.path):
+            continue
+        if not _old_enough(entry, blame_of(entry.path), min_age, now):
+            continue
+        key = _change_key("commit", entry)
+        exact = [item for item in saved if item.change == key and item.folder not in claimed]
+        if len(exact) == 1:
+            item = exact[0]
+            assert item.folder is not None
+            claimed.add(item.folder)
+            if _commit_was_rewritten(start, item.commit, commit):
+                nxt = _retarget_note(item.text, commit)
+                if nxt != item.text:
+                    _write_saved(item.folder, nxt)
+            continue
+        if len(exact) > 1:
+            continue
+        body = _body_key(entry)
+        matches: list[SavedWhy] = []
+        for item in saved:
+            if item.folder in claimed or item.file != entry.path or item.folder is None:
+                continue
+            if not _commit_was_rewritten(start, item.commit, commit):
+                continue
+            if bodies_for(item.commit).get(item.change) == body:
+                matches.append(item)
+        if len(matches) != 1:
+            continue
+        item = matches[0]
+        assert item.folder is not None
+        claimed.add(item.folder)
+        nxt = _retarget_note(item.text, commit, _note_lines(entry), key)
+        if nxt != item.text:
+            _write_saved(item.folder, nxt)
 
 
 def run(start: Path, source: str, now: datetime | None = None, any_age: bool = False) -> tuple[Path, ...]:
@@ -648,8 +842,11 @@ def run(start: Path, source: str, now: datetime | None = None, any_age: bool = F
             cache[path] = parse_blame(porcelain)
         return cache[path]
 
+    entries = parse_diff(diff)
+    if source == "commit":
+        _keep_saved_why(start, top, entries, blame_of, commit=commit, min_age=min_age, now=now)
     chosen = select_decisions(
-        parse_diff(diff), blame_of, source=source, commit=commit,
+        entries, blame_of, source=source, commit=commit,
         min_age=min_age, captured=_captured(top), now=now, mark_young_below=mark_young_below,
     )
     if not chosen:
