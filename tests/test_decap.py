@@ -1,15 +1,20 @@
 import os
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from PIL import Image
 
 from decap import (
+    _body_key,
     _change_key,
+    _parse_saved,
+    _render_saved,
     Kind,
     Line,
     NewFile,
+    SavedWhy,
     ShotLine,
     TextHunk,
     find_font,
@@ -486,6 +491,10 @@ def test_change_key_matches_the_editor_fixture():
     )
     assert _change_key("commit", app) == "2dd27812f1692903"
     assert _change_key("commit", old) == "9d1dde00241324bf"
+    moved = TextHunk("src/app.py", 4, 4, app.lines)
+    assert _body_key(app) == _body_key(moved) == "fb345a99bdb210f6"
+    assert _change_key("commit", moved) != "2dd27812f1692903"
+    assert _body_key(old) == "ebdcc043758d305e"
 
 
 def test_hook_line_quotes_python_and_the_script():
@@ -547,6 +556,144 @@ def test_notify_on_linux_skips_a_missing_notify_send(monkeypatch, tmp_path):
     monkeypatch.setattr("decap.subprocess.run", lambda *args, **_kwargs: called.append(args))
     notify((tmp_path,))
     assert called == []
+
+
+def _decision_dirs(repo: Path) -> list[Path]:
+    root = repo / ".decisions"
+    if not root.is_dir():
+        return []
+    return sorted(path for path in root.iterdir() if path.is_dir() and not path.name.startswith("."))
+
+
+def _head(repo: Path) -> str:
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+
+
+def _why_repo(tmp_path: Path) -> tuple[Path, Path, str]:
+    repo = git_repo(tmp_path)
+    _app(repo, "def total(xs):\n    s = 0\n    return s\n")
+    commit(repo, 48, "start")
+    _app(repo, "def total(xs):\n    return sum(xs)\n")
+    commit(repo, 0.5, "use sum")
+    folders = run(repo, "commit")
+    assert len(folders) == 1
+    note = folders[0] / "note.md"
+    text = note.read_text(encoding="utf-8")
+    assert text.startswith("# src/app.py lines 1-3\n\n")
+    text = text.replace("# src/app.py lines 1-3\n\n", "# src/app.py lines 1-3\n\nThe sum was wrong.\n\n", 1)
+    note.write_text(text, encoding="utf-8", newline="\n")
+    return repo, note, _head(repo)
+
+
+def _install_real_hook(repo: Path) -> None:
+    import decap
+
+    install_hook(repo, Path(sys.executable), Path(decap.__file__))
+
+
+def _shift_base(repo: Path) -> None:
+    subprocess.run(["git", "branch", "shifted", "HEAD~1"], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "shifted"], cwd=repo, check=True)
+    _app(repo, "# shifted\n# so the\n# same edit\n# moves\n\ndef total(xs):\n    s = 0\n    return s\n")
+    commit(repo, 48, "prefix")
+    subprocess.run(["git", "checkout", "-"], cwd=repo, check=True)
+
+
+def test_saved_why_round_trip_keeps_legacy_and_readable():
+    legacy = _parse_saved(
+        "---\ncommit: abc123\nfile: src/app.py\nlines: 1-3\nage: 2 days\nchange: abcdef\n---\n\nWhy:\nThe sum was wrong.\n"
+    )
+    assert legacy.format == "legacy"
+    assert legacy.why == "The sum was wrong."
+    rendered = _render_saved(SavedWhy(
+        folder=None, format="legacy", commit="fff", file=legacy.file, lines="4-8",
+        age=legacy.age, change="bbbb", young=False, why=legacy.why, text="",
+    ))
+    assert rendered.startswith("---\n")
+    assert _parse_saved(rendered).why == "The sum was wrong."
+    assert "commit: fff" in rendered.splitlines()
+    assert "lines: 4-8" in rendered.splitlines()
+    readable = _parse_saved(
+        "# src/app.py lines 1-3\n\nThe sum was wrong.\n\n"
+        "![before](before.png)\n![after](after.png)\n\n"
+        "<!-- decap\ncommit: abc123\nfile: src/app.py\nlines: 1-3\nage: 2 days\nchange: abcdef\nyoung: true\n-->\n"
+    )
+    assert readable.young is True
+    again = _render_saved(readable)
+    assert _parse_saved(again).why == "The sum was wrong."
+    assert "young: true" in again.splitlines()
+
+
+def test_rebase_that_keeps_lines_points_the_note_at_the_new_commit(tmp_path):
+    repo, note, old = _why_repo(tmp_path)
+    _install_real_hook(repo)
+    subprocess.run(["git", "rebase", "-f", "HEAD~1"], cwd=repo, check=True, capture_output=True, text=True)
+    new = _head(repo)
+    assert new != old
+    text = note.read_text(encoding="utf-8")
+    assert "The sum was wrong." in text
+    assert f"commit: {new}" in text.splitlines()
+    assert old not in text
+    assert "lines: 1-3" in text.splitlines()
+    assert _note_key(text) == "2dd27812f1692903"
+    assert len(_decision_dirs(repo)) == 1
+    kept = note.read_text(encoding="utf-8")
+    assert run(repo, "commit") == ()
+    assert note.read_text(encoding="utf-8") == kept
+    assert len(_decision_dirs(repo)) == 1
+
+
+def test_rebase_that_moves_lines_keeps_one_legacy_why(tmp_path):
+    repo, note, old = _why_repo(tmp_path)
+    key = _note_key(note.read_text(encoding="utf-8"))
+    assert key
+    images = {name: (note.parent / name).read_bytes() for name in ("before.png", "after.png")}
+    note.write_text(
+        "---\n"
+        f"commit: {old}\n"
+        "file: src/app.py\n"
+        "lines: 1-3\n"
+        "age: 2 days\n"
+        f"change: {key}\n"
+        "---\n"
+        "\n"
+        "Why:\n"
+        "The sum was wrong.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _shift_base(repo)
+    _install_real_hook(repo)
+    subprocess.run(["git", "rebase", "shifted"], cwd=repo, check=True, capture_output=True, text=True)
+    new = _head(repo)
+    assert new != old
+    text = note.read_text(encoding="utf-8")
+    assert text.startswith("---\n")
+    assert "The sum was wrong." in text
+    assert f"commit: {new}" in text.splitlines()
+    assert old not in text
+    assert "lines: 4-8" in text.splitlines()
+    assert _note_key(text) != key
+    assert len(_decision_dirs(repo)) == 1
+    for name, data in images.items():
+        assert (note.parent / name).read_bytes() == data
+    kept = note.read_text(encoding="utf-8")
+    assert run(repo, "commit") == ()
+    assert note.read_text(encoding="utf-8") == kept
+    assert len(_decision_dirs(repo)) == 1
+
+
+def test_reapplying_the_same_edit_keeps_the_original_commit(tmp_path):
+    repo, note, old = _why_repo(tmp_path)
+    _app(repo, "def total(xs):\n    s = 0\n    return s\n")
+    commit(repo, 48, "revert")
+    _app(repo, "def total(xs):\n    return sum(xs)\n")
+    commit(repo, 0, "again")
+    assert run(repo, "commit") == ()
+    text = note.read_text(encoding="utf-8")
+    assert f"commit: {old}" in text.splitlines()
+    assert "The sum was wrong." in text
+    assert len(_decision_dirs(repo)) == 1
 
 
 def test_notify_on_windows_uses_powershell_or_skips(monkeypatch, tmp_path):

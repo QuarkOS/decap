@@ -5,9 +5,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { decodePNGFromStream } from "pureimage";
 import * as vscode from "vscode";
-import { applyWhy, noteKey, parseNote, renderNote } from "../../note";
+import { applyWhy, noteKey, parseNote, renderNote, retargetNote } from "../../note";
 import { WHY_PLACEHOLDER } from "../../panel";
-import { changeKey, TextHunk } from "../../rules";
+import { bodyKey, changeKey, TextHunk } from "../../rules";
 
 const APP_KEY = "2dd27812f1692903";
 const OLD_KEY = "9d1dde00241324bf";
@@ -180,6 +180,56 @@ suite("decap extension", () => {
     return;
   }
 
+  if (process.env.DECAP_LAYOUT === "rebase") {
+    test("a rebase keeps a saved why and does not ask again", async function () {
+      this.timeout(90000);
+      const exported = await api();
+      await exported.whenWatching();
+      await exported.refreshGit();
+      assert.strictEqual(exported.prompts().length, 0);
+      assert.strictEqual(exported.pendingText(), "");
+      assert.strictEqual(exported.entries().length, 1);
+      const before = exported.entries()[0];
+      const oldCommit = parseNote(before.note).commit;
+      assert.ok(oldCommit);
+      assert.strictEqual(parseNote(before.note).why, "The sum was wrong.");
+      git(["rebase", "shifted"]);
+      const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root(), encoding: "utf8" }).trim();
+      assert.notStrictEqual(head, oldCommit);
+      await exported.refreshGit();
+      await waitFor(() => {
+        const entry = exported.entries()[0];
+        return Boolean(entry) && parseNote(entry.note).commit === head && exported.entries().length === 1;
+      }, "the saved why on the rebased commit");
+      assert.strictEqual(exported.entries().length, 1);
+      const entry = exported.entries()[0];
+      assert.strictEqual(entry.folder, before.folder);
+      const note = parseNote(entry.note);
+      assert.strictEqual(note.why, "The sum was wrong.");
+      assert.strictEqual(note.commit, head);
+      assert.strictEqual(entry.note.includes(oldCommit), false);
+      assert.strictEqual(entry.note.includes(APP_KEY), false);
+      assert.ok(entry.note.includes("lines: 4-8"), entry.note);
+      assert.ok(entry.note.startsWith("# src/app.py lines 4-8\n"), entry.note);
+      assert.strictEqual(exported.prompts().length, 0);
+      assert.strictEqual(exported.prompts().some((item) => item.action === "Fill in why"), false);
+      assert.strictEqual(exported.pendingText(), "");
+      const page = exported.standaloneHtml();
+      assert.ok(page.includes(">The sum was wrong.</textarea>"), page);
+      assert.ok(page.includes("app.py lines 4-8"), page);
+      assert.strictEqual(page.includes("Fill in why"), false);
+      assert.strictEqual(page.includes("decap saved"), false);
+      const status = exported.statusMessages();
+      assert.ok(
+        status.some((item) => item === "decap: nothing captured, this change was already captured"),
+        status.join("\n"),
+      );
+      assert.strictEqual(status.some((item) => item.includes("fill in why")), false);
+      assert.strictEqual(exported.reviews().some((item) => item.action === "Review anyway"), false);
+    });
+    return;
+  }
+
   test("reads a legacy note and writes a readable one", () => {
     const legacy = "---\ncommit: abc123\nfile: src/app.py\nlines: 10-12\nage: 2 days\nchange: abcdef\n---\n\nWhy:\nbecause\n";
     const parsed = parseNote(legacy);
@@ -233,6 +283,27 @@ suite("decap extension", () => {
     };
     assert.strictEqual(changeKey("commit", app), APP_KEY);
     assert.strictEqual(changeKey("commit", old), OLD_KEY);
+    const moved: TextHunk = { ...app, oldStart: 4, newStart: 4 };
+    assert.strictEqual(bodyKey(app), "fb345a99bdb210f6");
+    assert.strictEqual(bodyKey(moved), bodyKey(app));
+    assert.notStrictEqual(changeKey("commit", moved), APP_KEY);
+    assert.strictEqual(bodyKey(old), "ebdcc043758d305e");
+  });
+
+  test("retarget keeps a saved why on a legacy note and a readable note", () => {
+    const legacy = "---\ncommit: abc123\nfile: src/app.py\nlines: 1-3\nage: 2 days\nchange: abcdef\n---\n\nWhy:\nThe sum was wrong.\n";
+    const moved = retargetNote(legacy, { commit: "fff", lines: "4-8", change: "bbbb" });
+    assert.ok(moved.startsWith("---\n"));
+    assert.strictEqual(parseNote(moved).why, "The sum was wrong.");
+    assert.strictEqual(parseNote(moved).commit, "fff");
+    assert.strictEqual(parseNote(moved).lines, "4-8");
+    assert.strictEqual(noteKey(moved), "bbbb");
+    const readable = renderNote({ ...parseNote(legacy), format: "readable" });
+    const kept = retargetNote(readable, { commit: "fff" });
+    assert.strictEqual(parseNote(kept).why, "The sum was wrong.");
+    assert.ok(kept.startsWith("# src/app.py lines 1-3\n"), kept);
+    assert.strictEqual(parseNote(kept).change, "abcdef");
+    assert.strictEqual(parseNote(kept).commit, "fff");
   });
 
   test("shows an empty state and does not ask to set up", async () => {

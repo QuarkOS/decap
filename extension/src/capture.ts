@@ -2,8 +2,8 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { renderPng } from "./render";
-import { noteKey } from "./note";
-import { Decision, DEFAULT_MIN_AGE_MS, parseBlame, parseDiff, selectDecisions } from "./rules";
+import { Note, noteKey, parseNote, retargetNote } from "./note";
+import { Decision, DEFAULT_MIN_AGE_MS, bodyKey, changeKey, ignored, noteLines, oldEnough, parseBlame, parseDiff, selectDecisions } from "./rules";
 
 const FRESH_COMMIT_SECONDS = 180;
 
@@ -160,6 +160,158 @@ function diff(root: string, revs: string[]): string {
   ]);
 }
 
+/** A why already saved for one change. */
+interface SavedWhy {
+  folder: string;
+  text: string;
+  note: Note;
+}
+
+function loadSaved(root: string): SavedWhy[] {
+  const dir = path.join(root, ".decisions");
+  const found: SavedWhy[] = [];
+  if (!fs.existsSync(dir)) {
+    return found;
+  }
+  for (const name of fs.readdirSync(dir)) {
+    if (name.startsWith(".")) {
+      continue;
+    }
+    const folder = path.join(dir, name);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(folder);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory()) {
+      continue;
+    }
+    const notePath = path.join(folder, "note.md");
+    if (!fs.existsSync(notePath)) {
+      continue;
+    }
+    const text = fs.readFileSync(notePath, "utf8").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    const note = parseNote(text);
+    if (!note.change) {
+      continue;
+    }
+    found.push({ folder, text, note });
+  }
+  return found;
+}
+
+function writeNote(folder: string, text: string): void {
+  const file = path.join(folder, "note.md");
+  const tmp = path.join(folder, `.note-${process.pid}.tmp`);
+  fs.writeFileSync(tmp, text);
+  fs.rmSync(file, { force: true });
+  try {
+    fs.renameSync(tmp, file);
+  } catch {
+    fs.copyFileSync(tmp, file);
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
+function commitWasRewritten(root: string, previous: string, current: string): boolean {
+  if (!previous || previous === current || previous === "uncommitted") {
+    return false;
+  }
+  if (git(root, ["rev-parse", "--verify", "--quiet", `${previous}^{commit}`]).code !== 0) {
+    return true;
+  }
+  return git(root, ["merge-base", "--is-ancestor", previous, current]).code !== 0;
+}
+
+function bodiesOf(root: string, commit: string, cache: Map<string, Map<string, string>>): Map<string, string> {
+  const cached = cache.get(commit);
+  if (cached) {
+    return cached;
+  }
+  const found = new Map<string, string>();
+  cache.set(commit, found);
+  if (!revExists(root, commit) || !revExists(root, `${commit}^`)) {
+    return found;
+  }
+  let text: string;
+  try {
+    text = diff(root, [`${commit}^`, commit]);
+  } catch {
+    return found;
+  }
+  for (const entry of parseDiff(text)) {
+    if (entry.type !== "hunk" || ignored(entry.hunk.path)) {
+      continue;
+    }
+    found.set(changeKey("commit", entry.hunk), bodyKey(entry.hunk));
+  }
+  return found;
+}
+
+function keepSavedWhy(input: {
+  root: string;
+  entries: ReturnType<typeof parseDiff>;
+  blameOf: (filePath: string) => Map<number, number>;
+  commit: string;
+  minAgeMs: number | undefined;
+  now: Date;
+}): void {
+  const saved = loadSaved(input.root);
+  if (saved.length === 0) {
+    return;
+  }
+  const claimed = new Set<string>();
+  const cache = new Map<string, Map<string, string>>();
+  for (const entry of input.entries) {
+    if (entry.type !== "hunk" || ignored(entry.hunk.path)) {
+      continue;
+    }
+    if (!oldEnough(entry.hunk, input.blameOf(entry.hunk.path), input.minAgeMs, input.now)) {
+      continue;
+    }
+    const key = changeKey("commit", entry.hunk);
+    const exact = saved.filter((item) => item.note.change === key && !claimed.has(item.folder));
+    if (exact.length === 1) {
+      const item = exact[0];
+      claimed.add(item.folder);
+      if (commitWasRewritten(input.root, item.note.commit, input.commit)) {
+        const next = retargetNote(item.text, { commit: input.commit });
+        if (next !== item.text) {
+          writeNote(item.folder, next);
+        }
+      }
+      continue;
+    }
+    if (exact.length > 1) {
+      continue;
+    }
+    const body = bodyKey(entry.hunk);
+    const matches = saved.filter((item) => {
+      if (claimed.has(item.folder) || item.note.file !== entry.hunk.path) {
+        return false;
+      }
+      if (!commitWasRewritten(input.root, item.note.commit, input.commit)) {
+        return false;
+      }
+      return bodiesOf(input.root, item.note.commit, cache).get(item.note.change) === body;
+    });
+    if (matches.length !== 1) {
+      continue;
+    }
+    const item = matches[0];
+    claimed.add(item.folder);
+    const next = retargetNote(item.text, {
+      commit: input.commit,
+      lines: noteLines(entry.hunk),
+      change: key,
+    });
+    if (next !== item.text) {
+      writeNote(item.folder, next);
+    }
+  }
+}
+
 function decisionNotes(root: string): Map<string, string> {
   const dir = path.join(root, ".decisions");
   const found = new Map<string, string>();
@@ -301,6 +453,9 @@ export async function captureDetailed(input: {
       cache.set(filePath, parsed);
       return parsed;
   };
+  if (input.source === "commit") {
+    keepSavedWhy({ root, entries, blameOf, commit, minAgeMs: minAge, now });
+  }
   const known = decisionNotes(root);
   const select = (gate: number | undefined, captured: Set<string>, markYoungBelowMs?: number) => selectDecisions({
     entries, blameOf, source: input.source, commit, minAgeMs: gate, captured, now, markYoungBelowMs,

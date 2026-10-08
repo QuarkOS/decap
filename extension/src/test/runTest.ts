@@ -44,6 +44,43 @@ function commitAt(workspace: string, paths: string[], message: string, when: str
   });
 }
 
+function prepareRebaseRepo(workspace: string): void {
+  prepareRepo(workspace);
+  const when = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  commitAt(workspace, ["src/app.py"], "use sum", when);
+  const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: workspace, encoding: "utf8" }).trim();
+  const branch = execFileSync("git", ["branch", "--show-current"], { cwd: workspace, encoding: "utf8" }).trim();
+  execFileSync("git", ["branch", "shifted", "HEAD~1"], { cwd: workspace });
+  execFileSync("git", ["checkout", "shifted"], { cwd: workspace });
+  fs.writeFileSync(
+    path.join(workspace, "src", "app.py"),
+    "# shifted\n# so the\n# same edit\n# moves\n\ndef total(xs):\n    s = 0\n    return s\n",
+  );
+  commitAt(workspace, ["src/app.py"], "prefix", when);
+  execFileSync("git", ["checkout", branch], { cwd: workspace });
+  const dir = path.join(workspace, ".decisions", "saved-why");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "note.md"), [
+    "# src/app.py lines 1-3",
+    "",
+    "The sum was wrong.",
+    "",
+    "![before](before.png)",
+    "![after](after.png)",
+    "",
+    "<!-- decap",
+    `commit: ${sha}`,
+    "file: src/app.py",
+    "lines: 1-3",
+    "age: 2 days",
+    "change: 2dd27812f1692903",
+    "-->",
+    "",
+  ].join("\n"));
+  fs.writeFileSync(path.join(dir, "before.png"), "");
+  fs.writeFileSync(path.join(dir, "after.png"), "");
+}
+
 function commitWhileClosed(workspace: string): void {
   const hook = path.join(workspace, ".git", "hooks", "post-commit");
   fs.mkdirSync(path.dirname(hook), { recursive: true });
@@ -92,6 +129,10 @@ async function main(): Promise<void> {
   await launch(closed, { DECAP_LAYOUT: "closed-prime" });
   commitWhileClosed(closed);
   await launch(closed, { DECAP_LAYOUT: "closed-reopen" });
+
+  const rebase = fs.mkdtempSync(path.join(os.tmpdir(), "decap-rebase-"));
+  prepareRebaseRepo(rebase);
+  await launch(rebase, { DECAP_LAYOUT: "rebase" });
 }
 
 main().catch((err: unknown) => {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+
+A rebase keeps a reason you already wrote. The note follows the new commit, and decap does not ask for that reason again. The hook and the editor share that note instead of writing a second one. Notes from 0.1.0 through 0.1.5 still open, including a reason already saved.
+
 ## 0.1.5
 
 A commit made while the editor is closed is saved when you open the editor again. The changed lines still have to be old enough for the 12 hour rule. A younger line is still skipped, and Review anyway still works. If the command line hook already saved that change, the editor does not write a second note.
