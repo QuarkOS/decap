@@ -20,7 +20,7 @@ Install the extension and open a folder that contains a git repository. The repo
 
 `decap: Show log` opens the decap output channel. It records each repository and, for every new commit, either the capture or the reason nothing was saved.
 
-`decap: Fill in why` opens the newest note from this session whose Why line is still empty.
+`decap: Fill in why` opens a form for the newest capture from this session that still has no reason.
 
 ## When nothing is captured
 
@@ -28,8 +28,12 @@ A commit that does not change an old line leaves a status bar message for 20 sec
 
 ## Sidebar
 
-The Decisions view lists `.decisions` folders from the git repository, newest first. Before any capture it explains that a capture appears after you commit a change to an old line. Select one to see the before image and the after image stacked, with the note under them. Edit the Why box and leave the field to save `note.md`.
+The Decisions view lists `.decisions` folders from the git repository, newest first. Before any capture it explains that a capture appears after you commit a change to an old line. Select one to see the before image and the after image stacked. Edit the Why box and leave the field to save `note.md`. The same text appears in the Fill in why form.
 
-A new capture shows a notification with Fill in why. That opens the note in an editor, with the cursor after `Why:`, and selects the capture in the sidebar. The status bar keeps `decap: fill in why` until that note is saved with a reason.
+A new capture shows a notification with Fill in why. That opens a form in the editor, focused on the reason, and selects the capture in the sidebar. The form shows the file name, the line range, how old the line was, a short commit hash, and the two images. Save stores the reason. If other captures from this session still need a reason, the form moves to the next one. Escape or closing the form leaves the reason empty. The status bar keeps `decap: fill in why` until a reason is saved.
+
+`note.md` is a short heading, the reason you wrote, and the two images. The machine-readable fields stay in an HTML comment at the bottom. Opening that file from decap uses the text editor.
+
+![Fill in why](media/why-panel-dark.png)
 
 Images use DejaVu Sans Mono, which is bundled with the extension. DejaVu is based on Bitstream Vera. The font license is `media/DejaVu-LICENSE.txt`.

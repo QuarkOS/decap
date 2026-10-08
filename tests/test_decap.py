@@ -21,6 +21,7 @@ from decap import (
     render_png,
     run,
     select_decisions,
+    _note_key,
 )
 
 ONE_HUNK = (
@@ -144,16 +145,23 @@ def test_note_and_age_gate():
     assert len(chosen) == 1
     decision = chosen[0]
     assert decision.note_md == (
-        "---\n"
+        "# src/app.py lines 10-12\n"
+        "\n"
+        "![before](before.png)\n"
+        "![after](after.png)\n"
+        "\n"
+        "<!-- decap\n"
         "commit: abc123\n"
         "file: src/app.py\n"
         "lines: 10-12\n"
         "age: 2 days\n"
         f"change: {decision.key}\n"
-        "---\n"
-        "\n"
-        "Why:\n"
+        "-->\n"
     )
+    assert not decision.note_md.startswith("---")
+    visible = decision.note_md.split("<!--", 1)[0]
+    assert "commit:" not in visible
+    assert "change:" not in visible
     assert [(line.text, line.marked) for line in decision.before_lines] == [
         ("keep", False),
         ("old", True),
@@ -234,7 +242,36 @@ def test_old_line_commit_writes_pngs(tmp_path):
     note = (folder / "note.md").read_text()
     assert f"commit: {head}" in note.splitlines()
     assert "file: src/app.py" in note.splitlines()
-    assert "Why:" in note.splitlines()
+    assert note.startswith("# src/app.py")
+    assert "![before](before.png)" in note.splitlines()
+    assert "![after](after.png)" in note.splitlines()
+    assert not note.startswith("---")
+    assert run(repo, "commit") == ()
+
+
+def test_legacy_note_keeps_the_change_key(tmp_path):
+    repo = git_repo(tmp_path)
+    _app(repo, "keep\nold\ntail\n")
+    commit(repo, 48, "start")
+    _app(repo, "keep\nnew\ntail\n")
+    commit(repo, 0, "edit")
+    folders = run(repo, "commit")
+    note_path = folders[0] / "note.md"
+    key = _note_key(note_path.read_text())
+    assert key
+    legacy = (
+        "---\n"
+        "commit: abc\n"
+        "file: src/app.py\n"
+        "lines: 1-3\n"
+        "age: 2 days\n"
+        f"change: {key}\n"
+        "---\n"
+        "\n"
+        "Why:\n"
+    )
+    assert _note_key(legacy) == key
+    note_path.write_text(legacy, newline="\n")
     assert run(repo, "commit") == ()
 
 

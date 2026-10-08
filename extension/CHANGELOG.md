@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+Fill in why opens a form in the editor. The form shows the file and lines, the age, a short commit hash, the before and after images, and a text box that is focused immediately. Save keeps the reason and moves to the next capture that still needs one. Closing the form leaves the reason empty. `note.md` now reads as a heading, the reason, and the two images. The commit, file, lines, age, and change hash sit in an HTML comment so a Markdown preview does not turn them into a giant heading. Notes written by 0.1.0 through 0.1.2 still count as the same capture.
+
 ## 0.1.2
 
 The sidebar reads `.decisions` from the git repository, including a repository one folder below the folder you opened. Fill in why opens that note, and a status item stays until the Why line has text. A commit that changes only new lines, or only lines younger than 12 hours, says so in the status bar. The first too-new commit explains the 12 hour rule and `git config decap.minAge 0`. `decap: Show log` opens the output channel that records each commit.

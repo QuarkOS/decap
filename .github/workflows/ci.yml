@@ -53,6 +53,14 @@ jobs:
       - name: Extension tests
         working-directory: extension
         run: xvfb-run -a npm test
+      - name: Screenshot the why panel
+        working-directory: extension
+        run: |
+          if ! command -v google-chrome >/dev/null 2>&1; then
+            wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb || true
+            sudo apt-get install -y /tmp/chrome.deb || true
+          fi
+          node scripts/shot-panel.js
       - name: Package the vsix
         working-directory: extension
         run: npm run package
@@ -61,6 +69,11 @@ jobs:
         with:
           name: decap-vsix
           path: extension/*.vsix
+      - name: Upload the why panel screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: why-panel-dark
+          path: extension/media/why-panel-dark.png
 
   extension-windows:
     runs-on: windows-latest

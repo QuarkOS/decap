@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { fileTitle, parseNote } from "./note";
 
 export interface Entry {
   folder: string;
@@ -38,20 +39,6 @@ export function listDecisions(root: string): Entry[] {
   });
 }
 
-export function splitWhy(note: string): { front: string; why: string } {
-  const marker = "\nWhy:\n";
-  const at = note.indexOf(marker);
-  if (at < 0) {
-    return { front: note, why: "" };
-  }
-  return { front: note.slice(0, at + marker.length), why: note.slice(at + marker.length) };
-}
-
-export function joinWhy(front: string, why: string): string {
-  const body = why.endsWith("\n") ? why : `${why}\n`;
-  return front.endsWith("\n") ? front + body : `${front}\n${body}`;
-}
-
 export function renderPage(
   entry: Entry | undefined,
   entries: Entry[],
@@ -62,15 +49,15 @@ export function renderPage(
     const selected = entry && item.folder === entry.folder ? " selected" : "";
     return `<button class="item${selected}" data-folder="${escapeAttr(item.folder)}">${escapeText(label(item))}</button>`;
   }).join("");
-  const parts = entry ? splitWhy(entry.note) : { front: "", why: "" };
-  const pair = entry
+  const parsed = entry ? parseNote(entry.note) : undefined;
+  const pair = entry && parsed
     ? `<div class="pair">
         <figure><figcaption>before</figcaption><img src="${src(entry.before)}" alt="before"></figure>
         <figure><figcaption>after</figcaption><img src="${src(entry.after)}" alt="after"></figure>
       </div>
-      <pre class="front">${escapeText(parts.front)}</pre>
+      <p class="meta">${escapeText(fileTitle(parsed))}</p>
       <label for="why">Why</label>
-      <textarea id="why"${focusWhy ? " autofocus" : ""}>${escapeText(parts.why)}</textarea>`
+      <textarea id="why" placeholder="Why did you change this? One or two sentences is enough."${focusWhy ? " autofocus" : ""}>${escapeText(parsed.why)}</textarea>`
     : `<p class="empty">No decisions yet. A capture appears after you commit a change to a line that is at least 12 hours old.</p>`;
   const folder = entry ? entry.folder : "";
   return `<!DOCTYPE html>
@@ -85,9 +72,9 @@ export function renderPage(
   .pair { display: flex; flex-direction: column; gap: 12px; align-items: stretch; }
   figure { margin: 0; flex: 1; min-width: 0; }
   figcaption { font-size: 12px; margin-bottom: 4px; }
-  img { max-width: 100%; height: auto; border: 1px solid var(--vscode-panel-border, #d0d7de); background: white; }
-  pre.front { white-space: pre-wrap; font-size: 12px; }
-  textarea { width: 100%; min-height: 80px; box-sizing: border-box; font-family: inherit; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, #888); }
+  img { max-width: 100%; height: auto; border: 1px solid var(--vscode-panel-border, #3c3c3c); background: transparent; }
+  .meta { font-size: 12px; margin: 0 0 4px; color: var(--vscode-descriptionForeground, #9d9d9d); }
+  textarea { width: 100%; min-height: 80px; box-sizing: border-box; font-family: inherit; color: var(--vscode-input-foreground, #cccccc); background: var(--vscode-input-background, #3c3c3c); border: 1px solid var(--vscode-input-border, #3c3c3c); }
   label { display: block; margin: 8px 0 4px; }
 </style>
 </head>
@@ -114,8 +101,8 @@ export function renderPage(
 }
 
 function label(entry: Entry): string {
-  const file = entry.note.split("\n").find((line) => line.startsWith("file: "));
-  return file ? `${entry.name}  ${file.slice("file: ".length)}` : entry.name;
+  const file = parseNote(entry.note).file;
+  return file ? `${entry.name}  ${file}` : entry.name;
 }
 
 function escapeText(value: string): string {

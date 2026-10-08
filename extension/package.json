@@ -2,7 +2,7 @@
   "name": "decap",
   "displayName": "decap",
   "description": "Captures a before and after image when a commit changes an old line.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "quarkos",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -64,6 +64,11 @@
           "icon": "media/icon.svg"
         }
       ]
+    },
+    "configurationDefaults": {
+      "workbench.editorAssociations": {
+        "**/.decisions/*/note.md": "default"
+      }
     },
     "views": {
       "decap": [
