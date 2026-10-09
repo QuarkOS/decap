@@ -61,49 +61,125 @@ async function main() {
     beforeSrc: `data:image/png;base64,${fs.readFileSync(path.join(dir, "before.png")).toString("base64")}`,
     afterSrc: `data:image/png;base64,${fs.readFileSync(path.join(dir, "after.png")).toString("base64")}`,
     why: "",
+    autofocus: false,
   });
   const page = path.join(dir, "panel.html");
   fs.writeFileSync(page, html);
   const shot = path.join(dir, "shot.png");
-  await new Promise((resolve, reject) => {
-    const child = spawn(chrome, [
-      "--headless=new",
-      "--disable-gpu",
-      "--no-sandbox",
-      "--hide-scrollbars",
-      "--no-first-run",
-      `--screenshot=${shot}`,
-      "--window-size=920,780",
-      `file://${page}`,
-    ], { stdio: "ignore" });
-    const started = Date.now();
-    let settled = false;
-    const finish = (err) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearInterval(timer);
-      child.kill("SIGKILL");
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve();
-    };
-    const timer = setInterval(() => {
-      if (fs.existsSync(shot) && fs.statSync(shot).size > 1000) {
-        finish();
-        return;
-      }
-      if (Date.now() - started > 20000) {
-        finish(new Error(`screenshot was not written to ${shot}`));
-      }
-    }, 200);
-    child.on("error", (err) => finish(err));
-  });
+  await captureShot(chrome, page, shot);
   fs.copyFileSync(shot, out);
   console.log(out);
+}
+
+function stopChrome(child) {
+  if (!child || !child.pid) {
+    return;
+  }
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+      return;
+    } catch {
+      // The process already exited, or it is not a group leader.
+    }
+  }
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    // already gone
+  }
+}
+
+function shotReady(shot) {
+  try {
+    return fs.statSync(shot).size > 1000;
+  } catch {
+    return false;
+  }
+}
+
+// Headless Chrome writes --screenshot only after the load settles, and it does not
+// flush the file when killed. A focused caret (or any request that never finishes)
+// can hold that settle past the old 20s poll. --timeout and --virtual-time-budget
+// force the capture and an exit instead.
+async function captureShot(chrome, page, shot) {
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "decap-chrome-"));
+  let log = "";
+  const child = spawn(chrome, [
+    "--headless=new",
+    "--disable-gpu",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--hide-scrollbars",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-networking",
+    "--disable-sync",
+    "--disable-extensions",
+    "--disable-component-update",
+    "--disable-default-apps",
+    "--disable-hang-monitor",
+    "--mute-audio",
+    "--enable-features=CDPScreenshotNewSurface",
+    `--user-data-dir=${profile}`,
+    "--virtual-time-budget=5000",
+    "--timeout=8000",
+    `--screenshot=${shot}`,
+    "--window-size=920,780",
+    `file://${page}`,
+  ], {
+    detached: process.platform !== "win32",
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  child.stderr.on("data", (chunk) => {
+    log = (log + chunk.toString()).slice(-4000);
+  });
+  const started = Date.now();
+  let stable = 0;
+  try {
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (err) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearInterval(timer);
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve();
+      };
+      const timer = setInterval(() => {
+        if (shotReady(shot)) {
+          const size = fs.statSync(shot).size;
+          if (size === stable) {
+            finish();
+            return;
+          }
+          stable = size;
+        }
+        if (Date.now() - started > 30000) {
+          const tail = log.trim().split("\n").slice(-12).join("\n");
+          finish(new Error(`screenshot was not written to ${shot}${tail ? `\n${tail}` : ""}`));
+        }
+      }, 200);
+      child.on("exit", () => {
+        if (shotReady(shot)) {
+          finish();
+        }
+      });
+      child.on("error", (err) => finish(err));
+    });
+  } finally {
+    stopChrome(child);
+    try {
+      fs.rmSync(profile, { recursive: true, force: true });
+    } catch {
+      // Chrome may still be releasing the profile directory.
+    }
+  }
 }
 
 main().catch((err) => {
