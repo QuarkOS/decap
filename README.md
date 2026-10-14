@@ -1,76 +1,33 @@
 # decap
 
-decap saves a before image and an after image when a commit changes a line last touched at least 12 hours ago. Each capture is a folder with those images and a note where you write why the change was made.
+decap saves a before image and an after image when a commit changes a line that is at least 12 hours old. You write why you made the change. You can search that note later.
 
-## Install
+## Quick start
 
-You need Python 3.11+ and git. From a checkout, install decap with pipx.
+Install `quarkos.decap` from Open VSX in Cursor or VS Code. Open a folder that contains a git repository.
 
-```
-pipx install .
-```
+## Commit a change
 
-## Add the hook
+Commit a change to a line that is at least 12 hours old while the window is open. decap saves the before image and the after image. A commit made while the window is closed is saved the next time you open the folder, when the line is at least 12 hours old.
 
-In a repository, run `decap install`.
+A notice says that decap saved the change. The notice offers **Fill in why**. The status bar shows `decap: fill in why`.
 
-The command adds a post-commit hook. If a hook file is already there, decap leaves it in place and appends its own block at the end.
+![A notice in VS Code says decap saved the capture and offers Fill in why.](docs/images/capture-notice.png)
 
-The hook captures a commit that changes or deletes a line last touched at least 12 hours ago. `git config decap.minAge 12` sets the hours. The default is 12. `decap hook --any-age` captures a younger commit and marks the note `young: true`. A later hook without the flag does not write that change again.
+If the line is less than 12 hours old, decap does not save images. The notice offers **Review anyway**.
 
-## Snap the working tree
+![A notice in VS Code says the lines are less than a minute old and offers Review anyway.](docs/images/review-anyway.png)
 
-`decap snap` captures the working tree against HEAD. This includes edits younger than the age gate. On Nobara, bind a KDE global shortcut to `decap snap` in the repository directory. decap does not listen for keys.
+Run **decap: Review last commit** to save the latest commit at any age.
 
-## Read the capture
+## Fill in why
 
-decap writes `.decisions/<date>_<time>_<slug>/` with `before.png`, `after.png`, and `note.md`. The note starts with the file and the reason. The change hash is in an HTML comment at the bottom.
+**Fill in why** opens a form for the changed file. The form shows the before image and the after image. Write the reason, then choose **Save**.
 
-On Linux, a notification names the folder when `notify-send` is installed. A missing `notify-send` is skipped. On Windows, decap shows a toast. If the toast cannot be shown, the commit still succeeds and the message is skipped.
+![The Fill in why form shows the before image and the after image for billing.py, with an empty box for the reason.](docs/images/fill-in-why.png)
 
-## Windows
+## Past decisions
 
-Install Python 3.11 or newer and Git for Windows. Install decap with pipx or with pip.
+Run **decap: Open decisions** to open the list. The newest capture is first. Type in **Search** to keep rows that match the reason, the file name, or the age.
 
-```
-pipx install .
-```
-
-```
-python -m pip install --user .
-```
-
-`decap install` writes a post-commit hook. Git for Windows runs that hook in its bash. The hook path uses forward slashes so `decap.exe` starts.
-
-A CRLF file is not a change when the text matches the last commit. Images use DejaVu Sans Mono when that font is installed, and Consolas when it is not.
-
-## Editor
-
-The `extension` folder is a VS Code extension. Cursor loads the same package. The Open VSX namespace is `quarkos`. This repository does not publish the package.
-
-From `extension`, install the dependencies and build the package.
-
-```
-npm install
-npx @vscode/vsce package
-```
-
-That writes `decap-0.1.8.vsix`. The CI artifact is the same file.
-
-In VS Code, open Extensions and choose Install from VSIX. From a terminal, run `code --install-extension decap-0.1.8.vsix`.
-
-In Cursor, use the same Install from VSIX action, or run `cursor --install-extension decap-0.1.8.vsix`.
-
-Open a folder that contains a git repository. The repository can be that folder, or the folder directly inside it. Installing the extension is the whole setup. The editor does not need Python and does not install a hook. A commit that changes a line at least 12 hours old is captured while the window is open. Opening the editor later captures a commit that was made while it was closed, when the changed lines are at least 12 hours old. A commit that is too new to capture says so in the status bar and offers Review anyway. `decap: Review last commit` captures HEAD at any age. `decap: Show log` opens the output channel. `pipx install .` from a checkout still installs the command-line tool for terminal-only use.
-
-`decap: Snap` captures the working tree. The default key is Alt+Shift+S. `decap: Open decisions` focuses the sidebar.
-
-The sidebar lists `.decisions` folders from the git repository, newest first. Before the first capture it says that a capture appears after you commit a change to an old line. Each row shows the folder, the file, and the first line of the reason. Typing in the search box keeps rows whose reason, file name, or age matches. Each entry shows the before image and the after image stacked. Edit the Why box and leave the field to save `note.md`.
-
-A new capture shows a notification with Fill in why. That opens a form in the editor for the reason, with the two images above the text box. The file name is a heading. When more than one reason is waiting, the form says how many are left. Save stores the reason. If another is waiting, the form moves to it and the earlier notification closes. Saved stays on screen long enough to read. `note.md` itself is a heading, that reason, and the images. If the command-line hook already saved that change, the editor does not write a second copy. If the reason is still empty, it still asks you to fill it in. A rebase keeps that reason on the new commit and does not ask again. Reloading the window brings the fill in why status item back while a reason is missing.
-
-![Fill in why](extension/media/why-panel-dark.png)
-
-To publish on Open VSX, download the CI vsix and run `npx ovsx publish decap-0.1.8.vsix` with your own token. The Marketplace is a separate publisher account and `vsce publish`. This repository has no publish workflow and no publish token.
-
-The plan is in [PLAN.md](PLAN.md).
+![The Decisions list shows a search for shorter, with one capture, its before image, its after image, and the saved reason.](docs/images/decisions-search.png)
