@@ -16,6 +16,8 @@ export interface WhyPanelModel {
   why: string;
   banner?: string;
   cspSource?: string;
+  /** Live panels focus the field. The screenshot leaves it blurred so the caret does not keep the frame busy. */
+  autofocus?: boolean;
 }
 
 export function renderWhyPanel(model: WhyPanelModel): string {
@@ -23,6 +25,7 @@ export function renderWhyPanel(model: WhyPanelModel): string {
     ? `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${model.cspSource}; style-src 'unsafe-inline'; script-src 'unsafe-inline';">`
     : "";
   const banner = model.banner ? `<p class="banner">${escapeText(model.banner)}</p>` : "";
+  const autofocus = model.autofocus !== false;
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -52,7 +55,7 @@ ${csp}
     <figure><figcaption>before</figcaption><img src="${escapeAttr(model.beforeSrc)}" alt="before"></figure>
     <figure><figcaption>after</figcaption><img src="${escapeAttr(model.afterSrc)}" alt="after"></figure>
   </div>
-  <textarea id="why" placeholder="${escapeAttr(WHY_PLACEHOLDER)}" autofocus>${escapeText(model.why)}</textarea>
+  <textarea id="why" placeholder="${escapeAttr(WHY_PLACEHOLDER)}"${autofocus ? " autofocus" : ""}>${escapeText(model.why)}</textarea>
   <div class="row"><button id="save" type="button">Save</button></div>
   <script>
     const vscodeApi = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : undefined;
@@ -78,7 +81,7 @@ ${csp}
     window.addEventListener("message", (event) => {
       if (event.data && event.data.type === "focus") focusWhy();
     });
-    focusWhy();
+    ${autofocus ? "focusWhy();" : ""}
   </script>
 </body>
 </html>`;
