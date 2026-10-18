@@ -2,11 +2,11 @@
 
 ## 0.2.0
 
-Capture selection records the lines you have selected, including an edit that is not saved yet, and opens Fill in why. Copy snippet puts a Markdown block on the clipboard with the file, the reason, and the diff.
+Pull request #16 adds Capture selection and Copy snippet. Capture selection records the lines you have selected, including an edit that is not saved yet, and opens Fill in why. Copy snippet puts a Markdown block on the clipboard with the file, the reason, and the diff.
 
-A quoted path, a rename, a deletion, and a text note that mentions binary files are captured. A merge no longer replays the other branch. Snap uses the unsaved editor. Review follows the file you are editing when the window has more than one folder. The why panel screenshot in CI finishes instead of hanging.
+Pull request #17 captures a quoted path, a rename, a deletion, and a text note that mentions binary files. A merge no longer replays the other branch. Snap uses the unsaved editor. Review follows the file you are editing when the window has more than one folder. The why panel screenshot in CI finishes instead of hanging.
 
-An MCP server over stdio lets an agent capture a commit or a line range, list captures, and read the why note. The README has the Cursor setup. This package is not published.
+Pull request #18 adds an MCP server over stdio so an agent can capture a commit or a line range, list captures, and read the why note. The README has the Cursor setup. This package is not published.
 
 ## 0.1.8
 
