@@ -904,15 +904,34 @@ suite("decap extension", () => {
     const file = path.join(dir, "src", "app.py");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, "x\n");
+    execFileSync("git", ["init"], { cwd: dir });
     const link = path.join(os.tmpdir(), `decap-link-${process.pid}`);
     fs.rmSync(link, { recursive: true, force: true });
     fs.symlinkSync(dir, link, process.platform === "win32" ? "junction" : undefined);
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), "decap-other-"));
+    execFileSync("git", ["init"], { cwd: other });
     try {
       assert.strictEqual(RepoPath.relative(link, file), "src/app.py");
+      assert.strictEqual(RepoPath.relative(other, file), undefined);
     } finally {
       fs.rmSync(link, { recursive: true, force: true });
       fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(other, { recursive: true, force: true });
     }
+  });
+
+  test("windows spellings of one repository still name the file inside it", () => {
+    const file = "D:\\a\\decap\\decap\\src\\watch.py";
+    assert.strictEqual(RepoPath.compare("/d/a/decap/decap", file, true), "src/watch.py");
+    assert.strictEqual(RepoPath.compare("\\\\?\\D:\\a\\decap\\decap", file, true), "src/watch.py");
+    assert.strictEqual(RepoPath.compare("d:/a/decap/decap", file, true), "src/watch.py");
+    assert.strictEqual(RepoPath.compare("D:/a/decap/decap\r\n", file, true), "src/watch.py");
+    assert.strictEqual(RepoPath.compare("D:\\a\\decap\\decap", "\\\\?\\D:\\a\\decap\\decap\\src\\watch.py", true), "src/watch.py");
+    const mapped = RepoPath.mapDrive("\\\\server\\share\\a\\decap\\decap", file, "\\\\server\\share");
+    assert.strictEqual(mapped?.replace(/\\/g, "/").toLowerCase(), "d:/a/decap/decap");
+    assert.strictEqual(RepoPath.compare(mapped ?? "", file, true), "src/watch.py");
+    assert.strictEqual(RepoPath.mapDrive("\\\\server\\share-other\\a\\decap\\decap", file, "\\\\server\\share"), undefined);
+    assert.strictEqual(RepoPath.compare("\\\\server\\share\\decap", file, true), undefined);
   });
 
   test("a merge walks only the first-parent commits", () => {

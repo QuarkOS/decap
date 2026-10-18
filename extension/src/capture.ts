@@ -410,20 +410,193 @@ export interface CaptureResult {
 
 export class RepoPath {
   static relative(root: string, file: string): string | undefined {
-    const rel = path.relative(RepoPath.canonical(root), RepoPath.canonical(file));
-    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
-      return undefined;
-    }
-    return rel.split(path.sep).join("/");
+    const win32 = process.platform === "win32";
+    return RepoPath.compare(root, file, win32)
+      ?? RepoPath.compareReal(root, file, win32)
+      ?? RepoPath.compareMapped(root, file, win32)
+      ?? RepoPath.fromGit(root, file);
   }
 
-  private static canonical(filePath: string): string {
-    const resolved = path.resolve(filePath);
-    try {
-      return fs.realpathSync(resolved);
-    } catch {
-      return resolved;
+  static compare(root: string, file: string, win32: boolean): string | undefined {
+    const base = RepoPath.normalize(root, win32);
+    const target = RepoPath.normalize(file, win32);
+    const posix = win32 ? path.win32 : path;
+    const rel = posix.relative(base, target);
+    const slash = rel.split(/[\\/]/).join("/");
+    if (slash === "" || slash.split("/").includes("..") || posix.isAbsolute(rel)) {
+      return undefined;
     }
+    return slash;
+  }
+
+  static normalize(input: string, win32: boolean): string {
+    let text = input.replace(/^\uFEFF/, "").replace(/^\s+/, "").replace(/[\r\n]+$/, "").replace(/\\/g, "/");
+    const lowered = text.toLowerCase();
+    if (lowered.startsWith("//?/unc/")) {
+      text = "//" + text.slice("//?/unc/".length);
+    } else if (lowered.startsWith("//?/")) {
+      text = text.slice("//?/".length);
+    }
+    if (win32) {
+      const msys = /^\/([a-zA-Z])\/(.*)$/.exec(text);
+      if (msys) {
+        text = `${msys[1]}:/${msys[2]}`;
+      }
+      text = text.toLowerCase();
+    }
+    return (win32 ? path.win32 : path).resolve(text);
+  }
+
+  static mapDrive(gitRoot: string, localPath: string, networkRoot: string): string | undefined {
+    const gitNorm = RepoPath.normalize(gitRoot, true);
+    const network = RepoPath.normalize(networkRoot, true).replace(/\\+$/, "");
+    const local = RepoPath.normalize(localPath, true);
+    const drive = /^([a-z]):/.exec(local);
+    if (!drive) {
+      return undefined;
+    }
+    const gitKey = gitNorm.toLowerCase();
+    const networkKey = network.toLowerCase();
+    if (gitKey !== networkKey && !gitKey.startsWith(`${networkKey}\\`)) {
+      return undefined;
+    }
+    let suffix = gitNorm.slice(network.length);
+    if (suffix !== "" && !suffix.startsWith("\\")) {
+      suffix = `\\${suffix}`;
+    }
+    if (suffix === "") {
+      suffix = "\\";
+    }
+    return path.win32.normalize(`${drive[1]}:${suffix}`);
+  }
+
+  private static compareReal(root: string, file: string, win32: boolean): string | undefined {
+    const base = RepoPath.real(root);
+    const target = RepoPath.real(file);
+    if (!base || !target) {
+      return undefined;
+    }
+    return RepoPath.compare(base, target, win32);
+  }
+
+  private static compareMapped(root: string, file: string, win32: boolean): string | undefined {
+    if (!win32) {
+      return undefined;
+    }
+    const fileDrive = RepoPath.driveLetter(file);
+    const rootDrive = RepoPath.driveLetter(root);
+    const letter = fileDrive ?? rootDrive;
+    if (!letter) {
+      return undefined;
+    }
+    const network = RepoPath.driveNetwork(letter);
+    if (!network) {
+      return undefined;
+    }
+    if (fileDrive) {
+      const mapped = RepoPath.mapDrive(root, file, network);
+      return mapped ? RepoPath.compare(mapped, file, true) : undefined;
+    }
+    const mappedFile = RepoPath.mapDrive(file, root, network);
+    return mappedFile ? RepoPath.compare(root, mappedFile, true) : undefined;
+  }
+
+  private static driveLetter(input: string): string | undefined {
+    return /^([a-z]):/.exec(RepoPath.normalize(input, true))?.[1];
+  }
+
+  private static driveNetwork(letter: string): string | undefined {
+    try {
+      const resolved = fs.realpathSync.native(`${letter}:\\`);
+      const found = RepoPath.normalize(resolved, true).replace(/\\+$/, "");
+      const plain = RepoPath.normalize(`${letter}:\\`, true).replace(/\\+$/, "");
+      if (found.toLowerCase() === plain.toLowerCase()) {
+        return undefined;
+      }
+      return resolved;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private static real(input: string): string | undefined {
+    try {
+      return fs.realpathSync(path.resolve(input));
+    } catch {
+      return undefined;
+    }
+  }
+
+  // Git and the editor can name one folder with different spellings.
+  private static fromGit(root: string, file: string): string | undefined {
+    const placed = RepoPath.placement(file);
+    if (!placed || !RepoPath.sameRepo(root, placed.top)) {
+      return undefined;
+    }
+    return placed.rel;
+  }
+
+  private static placement(file: string): { top: string; rel: string } | undefined {
+    const dir = RepoPath.cwdOf(file);
+    if (!dir) {
+      return undefined;
+    }
+    const top = RepoPath.gitOut(dir, ["rev-parse", "--show-toplevel"]);
+    const prefixOut = RepoPath.gitOut(dir, ["rev-parse", "--show-prefix"]);
+    if (!top || prefixOut === undefined) {
+      return undefined;
+    }
+    let prefix = prefixOut.replace(/\\/g, "/");
+    if (prefix === "." || prefix === "./") {
+      prefix = "";
+    }
+    if (prefix !== "" && !prefix.endsWith("/")) {
+      prefix = `${prefix}/`;
+    }
+    const base = RepoPath.cwdOf(file) === file ? "" : path.basename(file);
+    const rel = `${prefix}${base}`.replace(/\/$/, "");
+    if (rel === "" || rel.split("/").includes("..")) {
+      return undefined;
+    }
+    return { top, rel };
+  }
+
+  private static sameRepo(root: string, fileTop: string): boolean {
+    const win32 = process.platform === "win32";
+    if (RepoPath.samePlace(root, fileTop, win32)) {
+      return true;
+    }
+    const cwd = RepoPath.cwdOf(root);
+    if (!cwd) {
+      return false;
+    }
+    const rootTop = RepoPath.gitOut(cwd, ["rev-parse", "--show-toplevel"]);
+    return !!rootTop && RepoPath.samePlace(rootTop, fileTop, win32);
+  }
+
+  private static samePlace(left: string, right: string, win32: boolean): boolean {
+    if (RepoPath.normalize(left, win32) === RepoPath.normalize(right, win32)) {
+      return true;
+    }
+    const a = RepoPath.real(left);
+    const b = RepoPath.real(right);
+    return !!a && !!b && RepoPath.normalize(a, win32) === RepoPath.normalize(b, win32);
+  }
+
+  private static cwdOf(input: string): string | undefined {
+    try {
+      return fs.statSync(input).isFile() ? path.dirname(input) : input;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private static gitOut(cwd: string, args: string[]): string | undefined {
+    const result = git(cwd, args);
+    if (result.code !== 0) {
+      return undefined;
+    }
+    return result.stdout.replace(/^\uFEFF/, "").replace(/^\s+/, "").replace(/[\r\n]+$/, "");
   }
 }
 
