@@ -86,7 +86,8 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "test": "npm run compile && node ./out/test/runTest.js",
+    "test": "npm run compile && node ./out/test/mcp.test.js && node ./out/test/runTest.js",
+    "mcp": "node ./out/mcp.js",
     "package": "npm run compile && esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js --format=cjs && vsce package"
   },
   "devDependencies": {
@@ -100,7 +101,9 @@
     "typescript": "^5.5.4"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "highlight.js": "^11.12.0",
-    "pureimage": "^0.4.20"
+    "pureimage": "^0.4.20",
+    "zod": "^4.6.7"
   }
 }

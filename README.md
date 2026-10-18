@@ -31,3 +31,28 @@ Run **decap: Review last commit** to save the latest commit at any age.
 Run **decap: Open decisions** to open the list. The newest capture is first. Type in **Search** to keep rows that match the reason, the file name, or the age.
 
 ![The Decisions list shows a search for shorter, with one capture, its before image, its after image, and the saved reason.](docs/images/decisions-search.png)
+
+## MCP server
+
+Agents can capture a commit or a line range, list saved captures, and read the why note. The server speaks MCP over stdio and uses the same capture code as the extension. It is not part of the published extension package. Build it from a checkout.
+
+```bash
+cd extension
+npm ci
+npm run compile
+```
+
+In Cursor, add this to `mcp.json`. The path is the compiled server in that checkout.
+
+```json
+{
+  "mcpServers": {
+    "decap": {
+      "command": "node",
+      "args": ["/absolute/path/to/decap/extension/out/mcp.js"]
+    }
+  }
+}
+```
+
+The tools are `decap_capture_commit`, `decap_capture_range`, `decap_list_captures`, and `decap_read_why`. `root` is the absolute path of the git repository. A line range counts from 1 and is inclusive. Omit `rev` on `decap_capture_range` to compare the file on disk with HEAD.
