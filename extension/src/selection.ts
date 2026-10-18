@@ -17,11 +17,20 @@ export class EditorLines {
 
 export class RepoFile {
   static relative(root: string, file: string): string | undefined {
-    const rel = path.relative(path.resolve(root), path.resolve(file));
+    const rel = path.relative(RepoFile.canonical(root), RepoFile.canonical(file));
     if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
       return undefined;
     }
     return rel.split(path.sep).join("/");
+  }
+
+  private static canonical(filePath: string): string {
+    const resolved = path.resolve(filePath);
+    try {
+      return fs.realpathSync(resolved);
+    } catch {
+      return resolved;
+    }
   }
 }
 

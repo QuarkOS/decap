@@ -9,7 +9,7 @@ import * as vscode from "vscode";
 import { applyWhy, noteKey, parseNote, renderNote, retargetNote } from "../../note";
 import { WHY_PLACEHOLDER } from "../../panel";
 import { LineRange, bodyKey, changeKey, parseDiff, TextHunk } from "../../rules";
-import { FileDiff, Snippet } from "../../selection";
+import { FileDiff, RepoFile, Snippet } from "../../selection";
 
 const APP_KEY = "2dd27812f1692903";
 const OLD_KEY = "9d1dde00241324bf";
@@ -856,6 +856,19 @@ suite("decap extension", () => {
       assert.strictEqual(parsed[0].hunk.path, "my app.py");
     }
     assert.strictEqual(text.includes("abc1234ffff"), false);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "decap-real-"));
+    const linked = path.join(dir, "src", "app.py");
+    fs.mkdirSync(path.dirname(linked), { recursive: true });
+    fs.writeFileSync(linked, "x\n");
+    const link = path.join(os.tmpdir(), `decap-link-${process.pid}`);
+    fs.rmSync(link, { recursive: true, force: true });
+    fs.symlinkSync(dir, link, process.platform === "win32" ? "junction" : undefined);
+    try {
+      assert.strictEqual(RepoFile.relative(link, linked), "src/app.py");
+    } finally {
+      fs.rmSync(link, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("does not call Python", () => {
