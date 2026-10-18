@@ -138,6 +138,21 @@ async function main(): Promise<void> {
   prepareRepo(reload);
   await launch(reload, { DECAP_LAYOUT: "status-save" });
   await launch(reload, { DECAP_LAYOUT: "status-reload" });
+
+  const unsaved = fs.mkdtempSync(path.join(os.tmpdir(), "decap-unsaved-"));
+  prepareRepo(unsaved);
+  await launch(unsaved, { DECAP_LAYOUT: "unsaved" });
+
+  const multi = fs.mkdtempSync(path.join(os.tmpdir(), "decap-multi-"));
+  const notes = path.join(multi, "notes");
+  const repo = path.join(multi, "repo");
+  fs.mkdirSync(notes);
+  fs.mkdirSync(repo);
+  prepareRepo(repo);
+  commitAt(repo, ["src/app.py"], "use sum", new Date().toISOString());
+  const ws = path.join(multi, "decap.code-workspace");
+  fs.writeFileSync(ws, `${JSON.stringify({ folders: [{ path: "notes" }, { path: "repo" }] }, null, 2)}\n`);
+  await launch(ws, { DECAP_LAYOUT: "multiroot", DECAP_FILE: path.join(repo, "src", "app.py") });
 }
 
 main().catch((err: unknown) => {

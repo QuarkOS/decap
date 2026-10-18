@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { capture, captureDetailed, CaptureResult, commitDescendsFrom, commitFreshness, commitsSince, readSeenCommit, resolveCommit, setGitPath, writeSeenCommit } from "./capture";
+import { capture, captureDetailed, CaptureResult, DirtyBuffer, commitDescendsFrom, commitFreshness, commitsSince, readSeenCommit, resolveCommit, setGitPath, writeSeenCommit } from "./capture";
 import { watchCommits } from "./git";
 import { applyWhy, fileMeta, fileTitle, parseNote } from "./note";
 import { renderSaved, renderWhyPanel, SAVED_HOLD_MS, waitingLine } from "./panel";
@@ -300,8 +300,8 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("decap.snap", () => snap()),
     vscode.commands.registerCommand("decap.showLog", () => output.show(true)),
     vscode.commands.registerCommand("decap.fillWhy", () => (pending[0] ? fillWhy(pending[0]) : undefined)),
-    vscode.commands.registerCommand("decap.reviewAnyway", () => reviewCommit(lastYoungRoot ?? workspaceRoot())),
-    vscode.commands.registerCommand("decap.reviewLast", () => reviewCommit(workspaceRoot())),
+    vscode.commands.registerCommand("decap.reviewAnyway", () => reviewCommit(lastYoungRoot ?? commandStart())),
+    vscode.commands.registerCommand("decap.reviewLast", () => reviewCommit(commandStart())),
     vscode.commands.registerCommand("decap.openNote", (uri: vscode.Uri) => openNoteAsText(uri)),
     vscode.commands.registerCommand("decap.openDecisions", async () => {
       await vscode.commands.executeCommand("decap.decisions.focus");
@@ -495,15 +495,34 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   }
 
+  function commandStart(): string | undefined {
+    const uri = vscode.window.activeTextEditor?.document.uri;
+    if (uri && uri.scheme === "file") {
+      return uri.fsPath;
+    }
+    return viewRoot ?? workspaceRoot();
+  }
+
+  function dirtyBuffers(): DirtyBuffer[] {
+    const found: DirtyBuffer[] = [];
+    for (const doc of vscode.workspace.textDocuments) {
+      if (!doc.isDirty || doc.uri.scheme !== "file" || doc.isUntitled) {
+        continue;
+      }
+      found.push({ file: doc.uri.fsPath, text: doc.getText() });
+    }
+    return found;
+  }
+
   async function snap() {
-    const root = workspaceRoot();
-    if (!root) {
+    const start = commandStart();
+    if (!start) {
       void vscode.window.showWarningMessage("Open a folder before running decap: Snap.");
       return;
     }
     let written: string[];
     try {
-      written = await capture({ start: viewRoot ?? root, source: "worktree", fontFile });
+      written = await capture({ start, source: "worktree", fontFile, buffers: dirtyBuffers() });
     } catch (err) {
       const message = err instanceof Error ? err.message.trim() : "";
       log(`snap failed: ${message}`);
@@ -525,7 +544,7 @@ export async function activate(context: vscode.ExtensionContext) {
     notices: () => notices,
     reviews: () => reviews,
     reviewNotes: () => reviewNotes,
-    reviewAnyway: () => reviewCommit(lastYoungRoot ?? workspaceRoot()),
+    reviewAnyway: () => reviewCommit(lastYoungRoot ?? commandStart()),
     statusMessages: () => statusMessages,
     skips: () => skips,
     pendingText: () => (pendingItem.text && pending.length ? pendingItem.text : ""),

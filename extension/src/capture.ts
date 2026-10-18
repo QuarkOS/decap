@@ -1,9 +1,10 @@
 import { execFileSync } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { renderPng } from "./render";
 import { Note, noteKey, parseNote, retargetNote } from "./note";
-import { Decision, DEFAULT_MIN_AGE_MS, bodyKey, changeKey, ignored, noteLines, oldEnough, parseBlame, parseDiff, selectDecisions } from "./rules";
+import { Decision, DEFAULT_MIN_AGE_MS, GitPath, blamePath, bodyKey, changeKey, ignored, noteLines, oldEnough, parseBlame, parseDiff, selectDecisions } from "./rules";
 
 const FRESH_COMMIT_SECONDS = 180;
 
@@ -22,8 +23,16 @@ export function setGitPath(value: string | undefined) {
 }
 
 function git(root: string, args: string[]): GitResult {
+  let cwd = root;
   try {
-    const stdout = execFileSync(gitPath, ["-c", "color.ui=never", "-C", root, ...args], {
+    if (fs.statSync(root).isFile()) {
+      cwd = path.dirname(root);
+    }
+  } catch {
+    cwd = root;
+  }
+  try {
+    const stdout = execFileSync(gitPath, ["-c", "color.ui=never", "-C", cwd, ...args], {
       encoding: "utf8",
       maxBuffer: 20 * 1024 * 1024,
       windowsHide: true,
@@ -77,7 +86,7 @@ export function commitDescendsFrom(root: string, ancestor: string, commit: strin
 }
 
 export function commitsSince(root: string, ancestor: string, commit: string): string[] {
-  const result = git(root, ["rev-list", "--reverse", `${ancestor}..${commit}`]);
+  const result = git(root, ["rev-list", "--first-parent", "--reverse", `${ancestor}..${commit}`]);
   if (result.code !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim() || "git command failed";
     throw new Error(detail);
@@ -156,7 +165,7 @@ function minAgeMs(root: string): number {
 
 function diff(root: string, revs: string[]): string {
   return gitText(root, [
-    "diff", "-U3", "--no-renames", "--no-ext-diff", "--ignore-cr-at-eol", ...revs,
+    "diff", "-U3", "--find-renames", "--no-ext-diff", "--ignore-cr-at-eol", ...revs,
   ]);
 }
 
@@ -267,7 +276,7 @@ function keepSavedWhy(input: {
     if (entry.type !== "hunk" || ignored(entry.hunk.path)) {
       continue;
     }
-    if (!oldEnough(entry.hunk, input.blameOf(entry.hunk.path), input.minAgeMs, input.now)) {
+    if (!oldEnough(entry.hunk, input.blameOf(blamePath(entry.hunk)), input.minAgeMs, input.now)) {
       continue;
     }
     const key = changeKey("commit", entry.hunk);
@@ -399,11 +408,122 @@ export interface CaptureResult {
   existing?: string[];
 }
 
+export interface DirtyBuffer {
+  file: string;
+  text: string;
+}
+
+export class WorktreeBuffer {
+  static overlay(root: string, diffText: string, buffers: DirtyBuffer[]): string {
+    if (buffers.length === 0) {
+      return diffText;
+    }
+    const sections = WorktreeBuffer.sections(diffText);
+    for (const buffer of buffers) {
+      const rel = WorktreeBuffer.repoPath(root, buffer.file);
+      if (!rel) {
+        continue;
+      }
+      const kept = sections.filter((section) => WorktreeBuffer.sectionPath(section) !== rel);
+      sections.length = 0;
+      sections.push(...kept);
+      const head = git(root, ["show", `HEAD:${rel}`]);
+      if (head.code !== 0) {
+        continue;
+      }
+      const synthetic = WorktreeBuffer.noIndex(head.stdout, buffer.text, rel);
+      if (synthetic) {
+        sections.push(synthetic);
+      }
+    }
+    return sections.join("");
+  }
+
+  private static sections(diffText: string): string[] {
+    const text = diffText.replace(/\r\n/g, "\n");
+    if (!text.includes("diff --git ")) {
+      return text.trim() === "" ? [] : [text];
+    }
+    return text.split(/(?=^diff --git )/m).filter((section) => section.startsWith("diff --git "));
+  }
+
+  private static sectionPath(section: string): string {
+    const parsed = parseDiff(section);
+    for (const entry of parsed) {
+      if (entry.type === "hunk") {
+        return entry.hunk.path;
+      }
+    }
+    const header = section.split("\n")[0] || "";
+    const rest = header.slice("diff --git ".length).trim();
+    const mark = rest.indexOf(" b/");
+    return mark === -1 ? GitPath.decode(rest) : GitPath.decode(rest.slice(mark + 1));
+  }
+
+  private static repoPath(root: string, file: string): string | undefined {
+    const rel = path.relative(path.resolve(root), path.resolve(file));
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+      return undefined;
+    }
+    return rel.split(path.sep).join("/");
+  }
+
+  private static noIndex(before: string, after: string, rel: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "decap-buf-"));
+    const left = path.join(dir, "before");
+    const right = path.join(dir, "after");
+    fs.writeFileSync(left, before);
+    fs.writeFileSync(right, after);
+    try {
+      const result = git(dir, ["diff", "--no-index", "--no-ext-diff", "--ignore-cr-at-eol", "-U3", "--", left, right]);
+      if ((result.code !== 0 && result.code !== 1) || result.stdout.trim() === "") {
+        return "";
+      }
+      return WorktreeBuffer.rewrite(result.stdout, rel);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  private static rewrite(diffText: string, rel: string): string {
+    const quoted = /[^\u0020-\u007e]/.test(rel) || /[\s"\\]/.test(rel);
+    const token = (prefix: string) => quoted ? `"${prefix}/${WorktreeBuffer.escape(rel)}"` : `${prefix}/${rel}`;
+    return diffText.replace(/\r\n/g, "\n").split("\n").map((line) => {
+      if (line.startsWith("diff --git ")) {
+        return `diff --git ${token("a")} ${token("b")}`;
+      }
+      if (line.startsWith("--- ")) {
+        return `--- ${token("a")}`;
+      }
+      if (line.startsWith("+++ ")) {
+        return `+++ ${token("b")}`;
+      }
+      return line;
+    }).join("\n");
+  }
+
+  private static escape(rel: string): string {
+    let out = "";
+    const bytes = Buffer.from(rel, "utf8");
+    for (const byte of bytes) {
+      if (byte === 92 || byte === 34) {
+        out += `\\${String.fromCharCode(byte)}`;
+      } else if (byte < 32 || byte >= 127) {
+        out += `\\${byte.toString(8).padStart(3, "0")}`;
+      } else {
+        out += String.fromCharCode(byte);
+      }
+    }
+    return out;
+  }
+}
+
 export async function capture(input: {
   start: string;
   source: "commit" | "worktree";
   fontFile: string;
   now?: Date;
+  buffers?: DirtyBuffer[];
 }): Promise<string[]> {
   return (await captureDetailed(input)).written;
 }
@@ -415,6 +535,7 @@ export async function captureDetailed(input: {
   now?: Date;
   anyAge?: boolean;
   rev?: string;
+  buffers?: DirtyBuffer[];
 }): Promise<CaptureResult> {
   const now = input.now ?? new Date();
   const root = toplevel(input.start);
@@ -442,7 +563,11 @@ export async function captureDetailed(input: {
   }
   const blameRev = input.source === "commit" ? `${input.rev ?? "HEAD"}^` : "HEAD";
   const cache = new Map<string, Map<number, number>>();
-  const entries = parseDiff(diff(root, revs));
+  let diffText = diff(root, revs);
+  if (input.source === "worktree" && input.buffers && input.buffers.length > 0) {
+    diffText = WorktreeBuffer.overlay(root, diffText, input.buffers);
+  }
+  const entries = parseDiff(diffText);
   const blameOf = (filePath: string) => {
       const cached = cache.get(filePath);
       if (cached) {
