@@ -408,6 +408,25 @@ export interface CaptureResult {
   existing?: string[];
 }
 
+export class RepoPath {
+  static relative(root: string, file: string): string | undefined {
+    const rel = path.relative(RepoPath.canonical(root), RepoPath.canonical(file));
+    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+      return undefined;
+    }
+    return rel.split(path.sep).join("/");
+  }
+
+  private static canonical(filePath: string): string {
+    const resolved = path.resolve(filePath);
+    try {
+      return fs.realpathSync(resolved);
+    } catch {
+      return resolved;
+    }
+  }
+}
+
 export interface DirtyBuffer {
   file: string;
   text: string;
@@ -461,11 +480,7 @@ export class WorktreeBuffer {
   }
 
   private static repoPath(root: string, file: string): string | undefined {
-    const rel = path.relative(path.resolve(root), path.resolve(file));
-    if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
-      return undefined;
-    }
-    return rel.split(path.sep).join("/");
+    return RepoPath.relative(root, file);
   }
 
   private static noIndex(before: string, after: string, rel: string): string {

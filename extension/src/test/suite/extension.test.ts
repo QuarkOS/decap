@@ -6,7 +6,7 @@ import * as os from "os";
 import * as path from "path";
 import { decodePNGFromStream } from "pureimage";
 import * as vscode from "vscode";
-import { commitsSince } from "../../capture";
+import { RepoPath, commitsSince } from "../../capture";
 import { applyWhy, noteKey, parseNote, renderNote, retargetNote } from "../../note";
 import { WHY_PLACEHOLDER, renderWhyPanel } from "../../panel";
 import { bodyKey, changeKey, parseDiff, TextHunk } from "../../rules";
@@ -897,6 +897,22 @@ suite("decap extension", () => {
       "",
     ].join("\n"));
     assert.strictEqual(binary[0].type, "skip");
+  });
+
+  test("a repository reached through a link still names the file inside it", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "decap-real-"));
+    const file = path.join(dir, "src", "app.py");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "x\n");
+    const link = path.join(os.tmpdir(), `decap-link-${process.pid}`);
+    fs.rmSync(link, { recursive: true, force: true });
+    fs.symlinkSync(dir, link, process.platform === "win32" ? "junction" : undefined);
+    try {
+      assert.strictEqual(RepoPath.relative(link, file), "src/app.py");
+    } finally {
+      fs.rmSync(link, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("a merge walks only the first-parent commits", () => {
