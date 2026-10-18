@@ -138,6 +138,10 @@ async function main(): Promise<void> {
   prepareRepo(reload);
   await launch(reload, { DECAP_LAYOUT: "status-save" });
   await launch(reload, { DECAP_LAYOUT: "status-reload" });
+
+  const selected = fs.mkdtempSync(path.join(os.tmpdir(), "decap-selection-"));
+  prepareRepo(selected);
+  await launch(selected, { DECAP_LAYOUT: "selection" });
 }
 
 main().catch((err: unknown) => {

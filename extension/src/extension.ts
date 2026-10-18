@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
 import { capture, captureDetailed, CaptureResult, commitDescendsFrom, commitFreshness, commitsSince, readSeenCommit, resolveCommit, setGitPath, writeSeenCommit } from "./capture";
+import { EditorLines, FileDiff, RepoFile, Snippet, toplevel } from "./selection";
 import { watchCommits } from "./git";
 import { applyWhy, fileMeta, fileTitle, parseNote } from "./note";
 import { renderSaved, renderWhyPanel, SAVED_HOLD_MS, waitingLine } from "./panel";
@@ -302,6 +303,8 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("decap.fillWhy", () => (pending[0] ? fillWhy(pending[0]) : undefined)),
     vscode.commands.registerCommand("decap.reviewAnyway", () => reviewCommit(lastYoungRoot ?? workspaceRoot())),
     vscode.commands.registerCommand("decap.reviewLast", () => reviewCommit(workspaceRoot())),
+    vscode.commands.registerCommand("decap.captureSelection", () => captureSelection()),
+    vscode.commands.registerCommand("decap.copySnippet", () => copySnippet()),
     vscode.commands.registerCommand("decap.openNote", (uri: vscode.Uri) => openNoteAsText(uri)),
     vscode.commands.registerCommand("decap.openDecisions", async () => {
       await vscode.commands.executeCommand("decap.decisions.focus");
@@ -495,6 +498,83 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   }
 
+  const selectionNotes: string[] = [];
+
+  function noteSelection(message: string) {
+    selectionNotes.push(message);
+    log(message);
+    if (process.env.DECAP_TEST !== "1") {
+      void vscode.window.setStatusBarMessage(`$(info) ${message}`, 10000);
+    }
+  }
+
+  async function captureSelection() {
+    const editor = vscode.window.activeTextEditor;
+    const doc = editor?.document;
+    if (!editor || !doc || doc.uri.scheme !== "file" || doc.isUntitled) {
+      noteSelection("Open a file in a repository to capture the selection.");
+      return;
+    }
+    let root: string;
+    try {
+      root = toplevel(path.dirname(doc.uri.fsPath));
+    } catch (err) {
+      const detail = err instanceof Error ? err.message.trim() : "";
+      noteSelection(detail ? `decap could not capture the selection. ${detail}` : "decap could not capture the selection.");
+      return;
+    }
+    const rel = RepoFile.relative(root, doc.uri.fsPath);
+    if (!rel) {
+      noteSelection("Open a file in a repository to capture the selection.");
+      return;
+    }
+    const span = EditorLines.inclusive(
+      editor.selection.start.line,
+      editor.selection.start.character,
+      editor.selection.end.line,
+      editor.selection.end.character,
+      editor.selection.isEmpty,
+    );
+    const before = FileDiff.head(root, rel);
+    if (before === undefined) {
+      noteSelection("Nothing to capture in the selection.");
+      return;
+    }
+    const diffText = FileDiff.between(root, rel, before, doc.getText());
+    let result: CaptureResult;
+    try {
+      result = await captureDetailed({
+        start: root,
+        source: "worktree",
+        fontFile,
+        diffText,
+        only: { path: rel, start: span.start, end: span.end },
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message.trim() : "";
+      noteSelection(detail ? `decap could not capture the selection. ${detail}` : "decap could not capture the selection.");
+      return;
+    }
+    if (result.written.length === 0) {
+      noteSelection("Nothing to capture in the selection.");
+      return;
+    }
+    noteSelection(`decap saved ${path.basename(result.written[0])}`);
+    remember(result.root, result.written);
+    fillWhy(result.written[0]);
+  }
+
+  async function copySnippet() {
+    const folder = whyFolder ?? view.selectedFolder() ?? pending[0] ?? view.entries()[0]?.folder;
+    if (!folder || !fs.existsSync(path.join(folder, "note.md"))) {
+      noteSelection("No capture to copy.");
+      return;
+    }
+    const text = Snippet.fromFolder(folder);
+    await vscode.env.clipboard.writeText(text);
+    noteSelection("Copied the capture.");
+  }
+
   async function snap() {
     const root = workspaceRoot();
     if (!root) {
@@ -544,6 +624,8 @@ export async function activate(context: vscode.ExtensionContext) {
     openNote: (notePath: string) => openNoteAsText(vscode.Uri.file(notePath)),
     refresh: () => view.refresh(),
     search: (text: string) => view.search(text),
+    selectionNotes: () => selectionNotes,
+    copyText: () => (whyFolder ? Snippet.fromFolder(whyFolder) : ""),
   };
 }
 
@@ -612,6 +694,10 @@ class DecisionView implements vscode.WebviewViewProvider {
     this.focusSearch = text.trim() !== "";
     this.wantFocus = false;
     this.refresh();
+  }
+
+  selectedFolder(): string | undefined {
+    return this.selected ?? this.shown().entry?.folder;
   }
 
   refresh() {
