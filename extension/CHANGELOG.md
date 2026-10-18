@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0
+
+Capture selection records the lines you have selected, including an edit that is not saved yet, and opens Fill in why. Copy snippet puts a Markdown block on the clipboard with the file, the reason, and the diff.
+
+A quoted path, a rename, a deletion, and a text note that mentions binary files are captured. A merge no longer replays the other branch. Snap uses the unsaved editor. Review follows the file you are editing when the window has more than one folder. The why panel screenshot in CI finishes instead of hanging.
+
+An MCP server over stdio lets an agent capture a commit or a line range, list captures, and read the why note. The README has the Cursor setup. This package is not published.
+
 ## 0.1.8
 
 Fill in why shows how many reasons are still waiting as soon as the form opens. Saving and moving to the next one closes the notification for the capture you left. The file name is a larger heading. Saved stays on screen long enough to read. The text box focus outline follows the editor theme.
