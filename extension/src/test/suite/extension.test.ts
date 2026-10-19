@@ -2,12 +2,14 @@ import * as assert from "assert";
 import { execFileSync } from "child_process";
 import { createReadStream } from "fs";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { decodePNGFromStream } from "pureimage";
 import * as vscode from "vscode";
 import { applyWhy, noteKey, parseNote, renderNote, retargetNote } from "../../note";
 import { WHY_PLACEHOLDER } from "../../panel";
-import { bodyKey, changeKey, TextHunk } from "../../rules";
+import { LineRange, bodyKey, changeKey, parseDiff, TextHunk } from "../../rules";
+import { FileDiff, RepoFile, Snippet } from "../../selection";
 
 const APP_KEY = "2dd27812f1692903";
 const OLD_KEY = "9d1dde00241324bf";
@@ -35,6 +37,7 @@ interface Api {
   openNote: (notePath: string) => Promise<void>;
   refresh: () => void;
   search: (text: string) => void;
+  selectionNotes: () => string[];
 }
 
 async function api(): Promise<Api> {
@@ -134,6 +137,42 @@ suite("decap extension", () => {
       assert.ok(panel.includes('alt="before"'), panel);
       assert.ok(!entry.note.startsWith("---"));
       assert.ok(exported.pendingText().includes("decap: fill in why"), exported.pendingText());
+    });
+    return;
+  }
+
+  if (process.env.DECAP_LAYOUT === "selection") {
+    test("capture selection saves the chosen lines and copy snippet puts markdown on the clipboard", async function () {
+      this.timeout(45000);
+      const exported = await api();
+      await exported.whenWatching();
+      const unchanged = await vscode.workspace.openTextDocument(path.join(root(), "src", "watch.py"));
+      const idle = await vscode.window.showTextDocument(unchanged);
+      idle.selection = new vscode.Selection(0, 0, unchanged.lineCount, 0);
+      const before = exported.entries().length;
+      await vscode.commands.executeCommand("decap.captureSelection");
+      assert.strictEqual(exported.entries().length, before);
+      assert.ok(
+        exported.selectionNotes().some((item) => item === "Nothing to capture in the selection."),
+        exported.selectionNotes().join("\n"),
+      );
+      const changed = await vscode.workspace.openTextDocument(path.join(root(), "src", "app.py"));
+      const editor = await vscode.window.showTextDocument(changed);
+      editor.selection = new vscode.Selection(0, 0, changed.lineCount, 0);
+      await vscode.commands.executeCommand("decap.captureSelection");
+      await waitFor(
+        () => exported.entries().some((entry) => entry.note.includes("file: src/app.py") && entry.note.includes("commit: uncommitted")),
+        "the selection capture",
+      );
+      const entry = exported.entries().find((item) => item.note.includes("file: src/app.py"));
+      assert.ok(entry);
+      assert.ok(exported.panelHtml().includes("autofocus"), exported.panelHtml());
+      await vscode.commands.executeCommand("decap.copySnippet");
+      const clip = await vscode.env.clipboard.readText();
+      assert.ok(clip.startsWith("### src/app.py"), clip);
+      assert.ok(clip.includes("```diff"), clip);
+      assert.ok(clip.includes("+    return sum(xs)"), clip);
+      assert.ok(exported.selectionNotes().includes("Copied the capture."));
     });
     return;
   }
@@ -781,6 +820,74 @@ suite("decap extension", () => {
       fs.rmSync(flagDir, { recursive: true, force: true });
       exported.refresh();
     }
+  });
+
+  test("a line range keeps the hunk that touches it and the snippet is markdown", () => {
+    const hunk: TextHunk = {
+      path: "src/app.py",
+      oldStart: 1,
+      newStart: 1,
+      lines: [
+        { kind: "context", text: "def total(xs):" },
+        { kind: "removed", text: "    s = 0" },
+        { kind: "added", text: "    return sum(xs)" },
+      ],
+    };
+    assert.strictEqual(LineRange.overlaps(hunk, 2, 2), true);
+    assert.strictEqual(LineRange.overlaps(hunk, 9, 9), false);
+    const text = Snippet.markdown({
+      file: "src/app.py",
+      lines: "1-2",
+      age: "2 days",
+      commit: "abc1234ffff",
+      why: "The sum was wrong.",
+      diff: "diff --git a/src/app.py b/src/app.py\n@@ -1,2 +1,2 @@\n def total(xs):\n-    s = 0\n+    return sum(xs)\n",
+    });
+    assert.ok(text.startsWith("### src/app.py lines 1-2\n"));
+    assert.ok(text.includes("The sum was wrong."));
+    assert.ok(text.includes("2 days · abc1234"));
+    assert.ok(text.includes("```diff"));
+    assert.ok(text.includes("+    return sum(xs)"));
+    const spaced = FileDiff.between(os.tmpdir(), "my app.py", "one\n", "two\n");
+    const parsed = parseDiff(spaced);
+    assert.strictEqual(parsed.length, 1);
+    assert.strictEqual(parsed[0].type, "hunk");
+    if (parsed[0].type === "hunk") {
+      assert.strictEqual(parsed[0].hunk.path, "my app.py");
+    }
+    assert.strictEqual(text.includes("abc1234ffff"), false);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "decap-real-"));
+    const linked = path.join(dir, "src", "app.py");
+    fs.mkdirSync(path.dirname(linked), { recursive: true });
+    fs.writeFileSync(linked, "x\n");
+    execFileSync("git", ["init"], { cwd: dir });
+    const link = path.join(os.tmpdir(), `decap-link-${process.pid}`);
+    fs.rmSync(link, { recursive: true, force: true });
+    fs.symlinkSync(dir, link, process.platform === "win32" ? "junction" : undefined);
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), "decap-other-"));
+    execFileSync("git", ["init"], { cwd: other });
+    try {
+      assert.strictEqual(RepoFile.relative(link, linked), "src/app.py");
+      assert.strictEqual(RepoFile.relative(other, linked), undefined);
+    } finally {
+      fs.rmSync(link, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  test("windows spellings of one repository still name the file inside it", () => {
+    const file = "D:\\a\\decap\\decap\\src\\watch.py";
+    assert.strictEqual(RepoFile.compare("/d/a/decap/decap", file, true), "src/watch.py");
+    assert.strictEqual(RepoFile.compare("\\\\?\\D:\\a\\decap\\decap", file, true), "src/watch.py");
+    assert.strictEqual(RepoFile.compare("d:/a/decap/decap", file, true), "src/watch.py");
+    assert.strictEqual(RepoFile.compare("D:/a/decap/decap\r\n", file, true), "src/watch.py");
+    assert.strictEqual(RepoFile.compare("D:\\a\\decap\\decap", "\\\\?\\D:\\a\\decap\\decap\\src\\watch.py", true), "src/watch.py");
+    const mapped = RepoFile.mapDrive("\\\\server\\share\\a\\decap\\decap", file, "\\\\server\\share");
+    assert.strictEqual(mapped?.replace(/\\/g, "/").toLowerCase(), "d:/a/decap/decap");
+    assert.strictEqual(RepoFile.compare(mapped ?? "", file, true), "src/watch.py");
+    assert.strictEqual(RepoFile.mapDrive("\\\\server\\share-other\\a\\decap\\decap", file, "\\\\server\\share"), undefined);
+    assert.strictEqual(RepoFile.compare("\\\\server\\share\\decap", file, true), undefined);
   });
 
   test("does not call Python", () => {
