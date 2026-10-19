@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { renderPng } from "./render";
 import { Note, noteKey, parseNote, retargetNote } from "./note";
-import { Decision, DEFAULT_MIN_AGE_MS, GitPath, blamePath, bodyKey, changeKey, ignored, noteLines, oldEnough, parseBlame, parseDiff, selectDecisions } from "./rules";
+import { Decision, DEFAULT_MIN_AGE_MS, GitPath, LineRange, blamePath, bodyKey, changeKey, ignored, noteLines, oldEnough, parseBlame, parseDiff, selectDecisions } from "./rules";
 
 const FRESH_COMMIT_SECONDS = 180;
 
@@ -20,6 +20,10 @@ export function setGitPath(value: string | undefined) {
   if (value) {
     gitPath = value;
   }
+}
+
+export function runGit(root: string, args: string[]): GitResult {
+  return git(root, args);
 }
 
 function git(root: string, args: string[]): GitResult {
@@ -724,6 +728,8 @@ export async function captureDetailed(input: {
   anyAge?: boolean;
   rev?: string;
   buffers?: DirtyBuffer[];
+  diffText?: string;
+  only?: { path: string; start: number; end: number };
 }): Promise<CaptureResult> {
   const now = input.now ?? new Date();
   const root = toplevel(input.start);
@@ -751,11 +757,17 @@ export async function captureDetailed(input: {
   }
   const blameRev = input.source === "commit" ? `${input.rev ?? "HEAD"}^` : "HEAD";
   const cache = new Map<string, Map<number, number>>();
-  let diffText = diff(root, revs);
+  let diffText = input.diffText ?? diff(root, revs);
   if (input.source === "worktree" && input.buffers && input.buffers.length > 0) {
     diffText = WorktreeBuffer.overlay(root, diffText, input.buffers);
   }
-  const entries = parseDiff(diffText);
+  let entries = parseDiff(diffText);
+  if (input.only) {
+    const only = input.only;
+    entries = entries.filter((entry) => {
+      return entry.type === "hunk" && entry.hunk.path === only.path && LineRange.overlaps(entry.hunk, only.start, only.end);
+    });
+  }
   const blameOf = (filePath: string) => {
       const cached = cache.get(filePath);
       if (cached) {

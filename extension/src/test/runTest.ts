@@ -153,6 +153,10 @@ async function main(): Promise<void> {
   const ws = path.join(multi, "decap.code-workspace");
   fs.writeFileSync(ws, `${JSON.stringify({ folders: [{ path: "notes" }, { path: "repo" }] }, null, 2)}\n`);
   await launch(ws, { DECAP_LAYOUT: "multiroot", DECAP_FILE: path.join(repo, "src", "app.py") });
+
+  const selected = fs.mkdtempSync(path.join(os.tmpdir(), "decap-selection-"));
+  prepareRepo(selected);
+  await launch(selected, { DECAP_LAYOUT: "selection" });
 }
 
 main().catch((err: unknown) => {

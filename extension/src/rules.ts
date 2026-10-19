@@ -508,6 +508,30 @@ function decision(hunk: TextHunk, key: string, age: number | undefined, commit: 
   };
 }
 
+export class LineRange {
+  static overlaps(hunk: TextHunk, start: number, end: number): boolean {
+    let line = hunk.newStart;
+    let first: number | undefined;
+    let last: number | undefined;
+    for (const item of hunk.lines) {
+      if (item.kind === "removed") {
+        continue;
+      }
+      const number = line || 1;
+      if (first === undefined) {
+        first = number;
+      }
+      last = number;
+      line += 1;
+    }
+    if (first === undefined || last === undefined) {
+      const point = hunk.newStart || 1;
+      return point >= start && point <= end;
+    }
+    return last >= start && first <= end;
+  }
+}
+
 export function selectDecisions(input: {
   entries: DiffEntry[];
   blameOf: (filePath: string) => Map<number, number>;
