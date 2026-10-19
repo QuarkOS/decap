@@ -20,6 +20,16 @@ If the line is less than 12 hours old, decap does not save images. The notice of
 
 Run **decap: Review last commit** to save the latest commit at any age.
 
+## Capture the selection
+
+Select the lines you want to record. Run **decap: Capture selection**. decap saves the before image and the after image for that range, including edits that are not saved yet, and opens Fill in why.
+
+A selection with no change against the last commit saves nothing.
+
+## Copy a capture
+
+Open a capture, or leave one selected in Decisions. Run **decap: Copy snippet**. The clipboard gets a Markdown block with the file, the reason, and the diff. Paste it into a pull request.
+
 ## Fill in why
 
 **Fill in why** opens a form for the changed file. The form shows the before image and the after image. Write the reason, then choose **Save**.

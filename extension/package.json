@@ -51,6 +51,14 @@
       {
         "command": "decap.reviewLast",
         "title": "decap: Review last commit"
+      },
+      {
+        "command": "decap.captureSelection",
+        "title": "decap: Capture selection"
+      },
+      {
+        "command": "decap.copySnippet",
+        "title": "decap: Copy snippet"
       }
     ],
     "keybindings": [
