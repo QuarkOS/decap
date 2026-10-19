@@ -6,8 +6,9 @@ import * as os from "os";
 import * as path from "path";
 import { decodePNGFromStream } from "pureimage";
 import * as vscode from "vscode";
+import { RepoPath, commitsSince } from "../../capture";
 import { applyWhy, noteKey, parseNote, renderNote, retargetNote } from "../../note";
-import { WHY_PLACEHOLDER } from "../../panel";
+import { WHY_PLACEHOLDER, renderWhyPanel } from "../../panel";
 import { LineRange, bodyKey, changeKey, parseDiff, TextHunk } from "../../rules";
 import { FileDiff, RepoFile, Snippet } from "../../selection";
 
@@ -137,6 +138,56 @@ suite("decap extension", () => {
       assert.ok(panel.includes('alt="before"'), panel);
       assert.ok(!entry.note.startsWith("---"));
       assert.ok(exported.pendingText().includes("decap: fill in why"), exported.pendingText());
+    });
+    return;
+  }
+
+  if (process.env.DECAP_LAYOUT === "unsaved") {
+    test("snap reads an unsaved editor and leaves the file on disk", async function () {
+      this.timeout(45000);
+      const exported = await api();
+      await exported.whenWatching();
+      const file = path.join(root(), "src", "watch.py");
+      const doc = await vscode.workspace.openTextDocument(file);
+      const editor = await vscode.window.showTextDocument(doc);
+      const replaced = await editor.edit((edit) => {
+        const full = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
+        edit.replace(full, "def watch():\n    return 7\n");
+      });
+      assert.strictEqual(replaced, true);
+      assert.strictEqual(doc.isDirty, true);
+      assert.ok(fs.readFileSync(file, "utf8").includes("return 0"));
+      await vscode.commands.executeCommand("decap.snap");
+      await waitFor(
+        () => exported.entries().some((entry) => entry.note.includes("file: src/watch.py")),
+        "the unsaved snap",
+      );
+      const entry = exported.entries().find((item) => item.note.includes("file: src/watch.py"));
+      assert.ok(entry);
+      assert.ok(entry.note.includes("commit: uncommitted"), entry.note);
+      assert.ok(fs.readFileSync(file, "utf8").includes("return 0"));
+    });
+    return;
+  }
+
+  if (process.env.DECAP_LAYOUT === "multiroot") {
+    test("review last follows the active editor when the first folder is not the repository", async function () {
+      this.timeout(60000);
+      const exported = await api();
+      await exported.whenWatching();
+      const file = process.env.DECAP_FILE;
+      assert.ok(file, "DECAP_FILE points at the file in the second root");
+      const doc = await vscode.workspace.openTextDocument(file);
+      await vscode.window.showTextDocument(doc);
+      await vscode.commands.executeCommand("decap.reviewLast");
+      await waitFor(
+        () => exported.entries().some((entry) => entry.note.includes("file: src/app.py")),
+        "a review of the second root",
+      );
+      const entry = exported.entries().find((item) => item.note.includes("file: src/app.py"));
+      assert.ok(entry);
+      assert.ok(entry.note.includes("commit:"), entry.note);
+      assert.strictEqual(entry.note.includes("commit: uncommitted"), false);
     });
     return;
   }
@@ -822,6 +873,152 @@ suite("decap extension", () => {
     }
   });
 
+  test("history parsing keeps a quoted path, a rename, a deletion, and a binary phrase apart", () => {
+    const quoted = parseDiff([
+      'diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"',
+      '--- "a/caf\\303\\251.py"',
+      '+++ "b/caf\\303\\251.py"',
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+      "",
+    ].join("\n"));
+    assert.strictEqual(quoted[0].type, "hunk");
+    if (quoted[0].type === "hunk") {
+      assert.strictEqual(quoted[0].hunk.path, "café.py");
+    }
+    const renamed = parseDiff([
+      "diff --git a/billing.py b/invoice.py",
+      "similarity index 59%",
+      "rename from billing.py",
+      "rename to invoice.py",
+      "--- a/billing.py",
+      "+++ b/invoice.py",
+      "@@ -1,3 +1,3 @@",
+      " def total(xs):",
+      "-    s = 0",
+      "+    return sum(xs)",
+      "     return s",
+      "",
+    ].join("\n"));
+    assert.strictEqual(renamed[0].type, "hunk");
+    if (renamed[0].type === "hunk") {
+      assert.strictEqual(renamed[0].hunk.path, "invoice.py");
+      assert.strictEqual(renamed[0].hunk.oldPath, "billing.py");
+    }
+    const deleted = parseDiff([
+      "diff --git a/billing.py b/billing.py",
+      "deleted file mode 100644",
+      "--- a/billing.py",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-value = 1",
+      "",
+    ].join("\n"));
+    assert.strictEqual(deleted[0].type, "hunk");
+    if (deleted[0].type === "hunk") {
+      assert.strictEqual(deleted[0].hunk.path, "billing.py");
+    }
+    const phrase = parseDiff([
+      "diff --git a/notes.py b/notes.py",
+      "--- a/notes.py",
+      "+++ b/notes.py",
+      "@@ -1 +1 @@",
+      "-ok",
+      '+return "Binary files differ"',
+      "",
+    ].join("\n"));
+    assert.strictEqual(phrase[0].type, "hunk");
+    const binary = parseDiff([
+      "diff --git a/pic.bin b/pic.bin",
+      "Binary files a/pic.bin and b/pic.bin differ",
+      "",
+    ].join("\n"));
+    assert.strictEqual(binary[0].type, "skip");
+  });
+
+  test("a repository reached through a link still names the file inside it", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "decap-real-"));
+    const file = path.join(dir, "src", "app.py");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "x\n");
+    execFileSync("git", ["init"], { cwd: dir });
+    const link = path.join(os.tmpdir(), `decap-link-${process.pid}`);
+    fs.rmSync(link, { recursive: true, force: true });
+    fs.symlinkSync(dir, link, process.platform === "win32" ? "junction" : undefined);
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), "decap-other-"));
+    execFileSync("git", ["init"], { cwd: other });
+    try {
+      assert.strictEqual(RepoPath.relative(link, file), "src/app.py");
+      assert.strictEqual(RepoPath.relative(other, file), undefined);
+    } finally {
+      fs.rmSync(link, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  test("windows spellings of one repository still name the file inside it", () => {
+    const file = "D:\\a\\decap\\decap\\src\\watch.py";
+    assert.strictEqual(RepoPath.compare("/d/a/decap/decap", file, true), "src/watch.py");
+    assert.strictEqual(RepoPath.compare("\\\\?\\D:\\a\\decap\\decap", file, true), "src/watch.py");
+    assert.strictEqual(RepoPath.compare("d:/a/decap/decap", file, true), "src/watch.py");
+    assert.strictEqual(RepoPath.compare("D:/a/decap/decap\r\n", file, true), "src/watch.py");
+    assert.strictEqual(RepoPath.compare("D:\\a\\decap\\decap", "\\\\?\\D:\\a\\decap\\decap\\src\\watch.py", true), "src/watch.py");
+    const mapped = RepoPath.mapDrive("\\\\server\\share\\a\\decap\\decap", file, "\\\\server\\share");
+    assert.strictEqual(mapped?.replace(/\\/g, "/").toLowerCase(), "d:/a/decap/decap");
+    assert.strictEqual(RepoPath.compare(mapped ?? "", file, true), "src/watch.py");
+    assert.strictEqual(RepoPath.mapDrive("\\\\server\\share-other\\a\\decap\\decap", file, "\\\\server\\share"), undefined);
+    assert.strictEqual(RepoPath.compare("\\\\server\\share\\decap", file, true), undefined);
+  });
+
+  test("a merge walks only the first-parent commits", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "decap-merge-"));
+    const gitIn = (args: string[], env?: NodeJS.ProcessEnv) => {
+      execFileSync("git", args, { cwd: dir, env: env ?? process.env });
+    };
+    gitIn(["init"]);
+    gitIn(["config", "user.email", "dev@example.com"]);
+    gitIn(["config", "user.name", "Dev"]);
+    gitIn(["config", "commit.gpgsign", "false"]);
+    fs.writeFileSync(path.join(dir, "app.py"), "def total(xs):\n    s = 0\n    return s\n");
+    gitIn(["add", "-A"]);
+    const past = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    gitIn(["commit", "-m", "start"], { ...process.env, GIT_AUTHOR_DATE: past, GIT_COMMITTER_DATE: past });
+    const branch = execFileSync("git", ["branch", "--show-current"], { cwd: dir, encoding: "utf8" }).trim();
+    gitIn(["checkout", "-b", "feature"]);
+    fs.writeFileSync(path.join(dir, "app.py"), "def total(xs):\n    return sum(xs)\n");
+    gitIn(["add", "-A"]);
+    gitIn(["commit", "-m", "feature edit"], { ...process.env, GIT_AUTHOR_DATE: past, GIT_COMMITTER_DATE: past });
+    gitIn(["checkout", branch]);
+    const main = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+    gitIn(["merge", "--no-ff", "feature", "-m", "merge feature"]);
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+    assert.deepStrictEqual(commitsSince(dir, main, head), [head]);
+  });
+
+  test("the still of the why panel leaves the field blurred", () => {
+    const html = renderWhyPanel({
+      title: "main.py lines 8-14",
+      meta: "3 days",
+      beforeSrc: "before.png",
+      afterSrc: "after.png",
+      why: "",
+      autofocus: false,
+    });
+    assert.strictEqual(html.includes("autofocus"), false);
+    assert.strictEqual(/^\s*focusWhy\(\);/m.test(html), false);
+    const live = renderWhyPanel({
+      title: "main.py lines 8-14",
+      meta: "3 days",
+      beforeSrc: "before.png",
+      afterSrc: "after.png",
+      why: "",
+    });
+    assert.ok(live.includes("autofocus"));
+    assert.ok(/^\s*focusWhy\(\);/m.test(live));
+  });
+
   test("a line range keeps the hunk that touches it and the snippet is markdown", () => {
     const hunk: TextHunk = {
       path: "src/app.py",
@@ -856,38 +1053,7 @@ suite("decap extension", () => {
       assert.strictEqual(parsed[0].hunk.path, "my app.py");
     }
     assert.strictEqual(text.includes("abc1234ffff"), false);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "decap-real-"));
-    const linked = path.join(dir, "src", "app.py");
-    fs.mkdirSync(path.dirname(linked), { recursive: true });
-    fs.writeFileSync(linked, "x\n");
-    execFileSync("git", ["init"], { cwd: dir });
-    const link = path.join(os.tmpdir(), `decap-link-${process.pid}`);
-    fs.rmSync(link, { recursive: true, force: true });
-    fs.symlinkSync(dir, link, process.platform === "win32" ? "junction" : undefined);
-    const other = fs.mkdtempSync(path.join(os.tmpdir(), "decap-other-"));
-    execFileSync("git", ["init"], { cwd: other });
-    try {
-      assert.strictEqual(RepoFile.relative(link, linked), "src/app.py");
-      assert.strictEqual(RepoFile.relative(other, linked), undefined);
-    } finally {
-      fs.rmSync(link, { recursive: true, force: true });
-      fs.rmSync(dir, { recursive: true, force: true });
-      fs.rmSync(other, { recursive: true, force: true });
-    }
-  });
-
-  test("windows spellings of one repository still name the file inside it", () => {
-    const file = "D:\\a\\decap\\decap\\src\\watch.py";
-    assert.strictEqual(RepoFile.compare("/d/a/decap/decap", file, true), "src/watch.py");
-    assert.strictEqual(RepoFile.compare("\\\\?\\D:\\a\\decap\\decap", file, true), "src/watch.py");
-    assert.strictEqual(RepoFile.compare("d:/a/decap/decap", file, true), "src/watch.py");
-    assert.strictEqual(RepoFile.compare("D:/a/decap/decap\r\n", file, true), "src/watch.py");
-    assert.strictEqual(RepoFile.compare("D:\\a\\decap\\decap", "\\\\?\\D:\\a\\decap\\decap\\src\\watch.py", true), "src/watch.py");
-    const mapped = RepoFile.mapDrive("\\\\server\\share\\a\\decap\\decap", file, "\\\\server\\share");
-    assert.strictEqual(mapped?.replace(/\\/g, "/").toLowerCase(), "d:/a/decap/decap");
-    assert.strictEqual(RepoFile.compare(mapped ?? "", file, true), "src/watch.py");
-    assert.strictEqual(RepoFile.mapDrive("\\\\server\\share-other\\a\\decap\\decap", file, "\\\\server\\share"), undefined);
-    assert.strictEqual(RepoFile.compare("\\\\server\\share\\decap", file, true), undefined);
+    assert.strictEqual(RepoFile, RepoPath);
   });
 
   test("does not call Python", () => {

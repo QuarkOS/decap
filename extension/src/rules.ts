@@ -32,6 +32,65 @@ export interface TextHunk {
   oldStart: number;
   newStart: number;
   lines: Line[];
+  oldPath?: string;
+}
+
+export class GitPath {
+  static decode(token: string): string {
+    const text = token.trim();
+    if (text.length >= 2 && text.startsWith("\"") && text.endsWith("\"")) {
+      return GitPath.stripAb(GitPath.unescape(text.slice(1, -1)));
+    }
+    return GitPath.stripAb(text);
+  }
+
+  static stripAb(filePath: string): string {
+    if (filePath.startsWith("a/") || filePath.startsWith("b/")) {
+      return filePath.slice(2);
+    }
+    return filePath;
+  }
+
+  private static unescape(text: string): string {
+    const raw: number[] = [];
+    let index = 0;
+    while (index < text.length) {
+      const char = text[index];
+      if (char !== "\\" || index + 1 >= text.length) {
+        const bytes = Buffer.from(char, "utf8");
+        for (const byte of bytes) {
+          raw.push(byte);
+        }
+        index += 1;
+        continue;
+      }
+      const next = text[index + 1];
+      const simple: Record<string, number> = {
+        a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, "\\": 92, "\"": 34,
+      };
+      if (simple[next] !== undefined) {
+        raw.push(simple[next]);
+        index += 2;
+        continue;
+      }
+      const octal = text.slice(index + 1, index + 4);
+      if (octal.length === 3 && /^[0-7]{3}$/.test(octal)) {
+        raw.push(Number.parseInt(octal, 8));
+        index += 4;
+        continue;
+      }
+      const encoded = Buffer.from(next, "utf8");
+      for (const byte of encoded) {
+        raw.push(byte);
+      }
+      index += 2;
+    }
+    return Buffer.from(raw).toString("utf8");
+  }
+}
+
+export function blamePath(hunk: TextHunk): string {
+  return hunk.oldPath || hunk.path;
 }
 
 export interface ShotLine {
@@ -80,24 +139,55 @@ function splitLines(text: string): string[] {
   return rows;
 }
 
+function binarySection(lines: string[]): boolean {
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      return false;
+    }
+    if (line.startsWith("Binary files ") || line.startsWith("GIT binary patch")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function parseSection(section: string): DiffEntry[] {
   const lines = splitLines(section);
   const pair = gitPair(lines[0] || "");
-  if (lines.some((line) => line.includes("Binary files") || line.includes("GIT binary patch"))) {
+  if (binarySection(lines)) {
     return [{ type: "skip" }];
   }
   let oldPath = pair.right;
   let filePath = pair.right;
+  let renameFrom = "";
+  let renameTo = "";
   for (const line of lines) {
-    if (line.startsWith("--- ")) {
+    if (line.startsWith("@@")) {
+      break;
+    }
+    if (line.startsWith("rename from ")) {
+      renameFrom = GitPath.decode(line.slice("rename from ".length));
+    } else if (line.startsWith("rename to ")) {
+      renameTo = GitPath.decode(line.slice("rename to ".length));
+    } else if (line.startsWith("--- ")) {
       oldPath = headerPath(line);
     } else if (line.startsWith("+++ ")) {
       filePath = headerPath(line);
     }
   }
-  if (oldPath === "/dev/null" || filePath === "/dev/null") {
+  if (renameFrom) {
+    oldPath = renameFrom;
+  }
+  if (renameTo) {
+    filePath = renameTo;
+  }
+  if (oldPath === "/dev/null") {
     return [{ type: "skip" }];
   }
+  if (filePath === "/dev/null") {
+    filePath = oldPath;
+  }
+  const blame = oldPath === filePath ? undefined : oldPath;
   const hunks: DiffEntry[] = [];
   let index = 0;
   while (index < lines.length) {
@@ -126,7 +216,7 @@ function parseSection(section: string): DiffEntry[] {
       }
       index += 1;
     }
-    hunks.push({ type: "hunk", hunk: { path: filePath, oldStart, newStart, lines: body } });
+    hunks.push({ type: "hunk", hunk: { path: filePath, oldStart, newStart, lines: body, oldPath: blame } });
   }
   return hunks;
 }
@@ -138,19 +228,19 @@ function gitPair(header: string): { left: string; right: string } {
   if (rest.startsWith("\"")) {
     const first = unquote(rest);
     const second = unquote(first.rest.trimStart());
-    left = first.value;
-    right = second.value;
+    left = GitPath.decode(`"${first.value}"`);
+    right = GitPath.decode(`"${second.value}"`);
   } else {
     const mark = rest.indexOf(" b/");
     if (mark === -1) {
-      left = rest;
-      right = rest;
+      left = GitPath.decode(rest);
+      right = left;
     } else {
-      left = rest.slice(0, mark);
-      right = rest.slice(mark + 1);
+      left = GitPath.decode(rest.slice(0, mark));
+      right = GitPath.decode(rest.slice(mark + 1));
     }
   }
-  return { left: stripAb(left), right: stripAb(right) };
+  return { left, right };
 }
 
 function unquote(text: string): { value: string; rest: string } {
@@ -168,19 +258,9 @@ function unquote(text: string): { value: string; rest: string } {
   return { value: text, rest: "" };
 }
 
-function stripAb(filePath: string): string {
-  if (filePath.startsWith("a/") || filePath.startsWith("b/")) {
-    return filePath.slice(2);
-  }
-  return filePath;
-}
-
 function headerPath(line: string): string {
-  let rest = line.slice(4).split("\t", 1)[0].trim();
-  if (rest.length >= 2 && rest.startsWith("\"") && rest.endsWith("\"")) {
-    rest = rest.slice(1, -1);
-  }
-  return stripAb(rest);
+  const rest = line.slice(4).split("\t", 1)[0].trim();
+  return GitPath.decode(rest);
 }
 
 export function parseBlame(porcelain: string): Map<number, number> {
@@ -468,11 +548,11 @@ export function selectDecisions(input: {
     if (entry.type !== "hunk" || ignored(entry.hunk.path)) {
       continue;
     }
-    if (!oldEnough(entry.hunk, input.blameOf(entry.hunk.path), input.minAgeMs, input.now)) {
+    if (!oldEnough(entry.hunk, input.blameOf(blamePath(entry.hunk)), input.minAgeMs, input.now)) {
       continue;
     }
     const removed = entry.hunk.lines.some((line) => line.kind === "removed");
-    const age = removed ? hunkAge(entry.hunk, input.blameOf(entry.hunk.path), input.now) : undefined;
+    const age = removed ? hunkAge(entry.hunk, input.blameOf(blamePath(entry.hunk)), input.now) : undefined;
     const key = changeKey(input.source, entry.hunk);
     if (seen.has(key)) {
       continue;

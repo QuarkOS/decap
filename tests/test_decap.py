@@ -704,3 +704,85 @@ def test_notify_on_windows_uses_powershell_or_skips(monkeypatch, tmp_path):
     notify((tmp_path,))
     assert called[0][:4] == ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
     assert "notify-send" not in called[0]
+
+
+def test_quoted_utf8_path_is_captured(tmp_path):
+    repo = git_repo(tmp_path)
+    name = "café.py"
+    (repo / name).write_text("def total(xs):\n    s = 0\n    return s\n", encoding="utf-8")
+    commit(repo, 48, "start")
+    (repo / name).write_text("def total(xs):\n    return sum(xs)\n    return s\n", encoding="utf-8")
+    commit(repo, 0, "edit")
+    folders = run(repo, "commit")
+    assert len(folders) == 1
+    note = (folders[0] / "note.md").read_text(encoding="utf-8")
+    assert "file: café.py" in note
+    assert "deleted" not in note.split("<!--", 1)[0]
+
+
+def test_path_with_a_space_is_captured(tmp_path):
+    repo = git_repo(tmp_path)
+    name = "my billing.py"
+    (repo / name).write_text("def total(xs):\n    s = 0\n    return s\n", encoding="utf-8")
+    commit(repo, 48, "start")
+    (repo / name).write_text("def total(xs):\n    return sum(xs)\n    return s\n", encoding="utf-8")
+    commit(repo, 0, "edit")
+    folders = run(repo, "commit")
+    assert len(folders) == 1
+    note = (folders[0] / "note.md").read_text(encoding="utf-8")
+    assert "file: my billing.py" in note
+
+
+def test_rename_captures_the_edited_lines(tmp_path):
+    repo = git_repo(tmp_path)
+    (repo / "billing.py").write_text("def total(xs):\n    s = 0\n    return s\n", encoding="utf-8")
+    commit(repo, 48, "start")
+    subprocess.run(["git", "mv", "billing.py", "invoice.py"], cwd=repo, check=True)
+    (repo / "invoice.py").write_text("def total(xs):\n    return sum(xs)\n    return s\n", encoding="utf-8")
+    commit(repo, 0, "rename")
+    folders = run(repo, "commit")
+    assert len(folders) == 1
+    note = (folders[0] / "note.md").read_text(encoding="utf-8")
+    visible = note.split("<!--", 1)[0]
+    assert "file: invoice.py" in note
+    assert "billing.py" not in visible
+    assert "deleted" not in visible
+
+
+def test_text_that_mentions_binary_files_is_captured(tmp_path):
+    repo = git_repo(tmp_path)
+    (repo / "notes.py").write_text('def show():\n    return "ok"\n', encoding="utf-8")
+    commit(repo, 48, "start")
+    (repo / "notes.py").write_text('def show():\n    return "Binary files differ in the log"\n', encoding="utf-8")
+    commit(repo, 0, "edit")
+    folders = run(repo, "commit")
+    assert len(folders) == 1
+    assert "file: notes.py" in (folders[0] / "note.md").read_text(encoding="utf-8")
+
+
+def test_a_real_binary_change_is_not_a_decision(tmp_path):
+    repo = git_repo(tmp_path)
+    (repo / "pic.bin").write_bytes(b"\x00\x01" * 30)
+    (repo / "ok.py").write_text("x = 1\n", encoding="utf-8")
+    commit(repo, 48, "start")
+    (repo / "pic.bin").write_bytes(b"\x00\x02" * 30)
+    (repo / "ok.py").write_text("x = 2\n", encoding="utf-8")
+    commit(repo, 0, "edit")
+    folders = run(repo, "commit")
+    assert len(folders) == 1
+    note = (folders[0] / "note.md").read_text(encoding="utf-8")
+    assert "file: ok.py" in note
+    assert "pic.bin" not in note
+
+
+def test_deleting_an_old_file_is_captured(tmp_path):
+    repo = git_repo(tmp_path)
+    (repo / "billing.py").write_text("def total(xs):\n    s = 0\n    return s\n", encoding="utf-8")
+    commit(repo, 48, "start")
+    subprocess.run(["git", "rm", "-q", "billing.py"], cwd=repo, check=True)
+    commit(repo, 0, "remove")
+    folders = run(repo, "commit")
+    assert len(folders) == 1
+    note = (folders[0] / "note.md").read_text(encoding="utf-8")
+    assert "file: billing.py" in note
+    assert "lines: 1-3" in note
