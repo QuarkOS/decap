@@ -53,6 +53,10 @@ class TextHunk:
     old_start: int
     new_start: int
     lines: tuple[Line, ...]
+    old_path: str = ""
+
+    def blame_path(self) -> str:
+        return self.old_path or self.path
 
 
 @dataclass(frozen=True)
@@ -96,21 +100,90 @@ def parse_diff(text: str) -> tuple[DiffEntry, ...]:
     return tuple(entries)
 
 
+class GitPath:
+    """A path token from `git diff`. Quoted tokens use C-style byte escapes."""
+
+    _SIMPLE = {
+        "a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r",
+        "t": "\t", "v": "\v", "\\": "\\", '"': '"',
+    }
+
+    @staticmethod
+    def decode(token: str) -> str:
+        text = token.strip()
+        if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+            text = GitPath._unescape(text[1:-1])
+        return GitPath.strip_ab(text)
+
+    @staticmethod
+    def strip_ab(path: str) -> str:
+        if path.startswith("a/") or path.startswith("b/"):
+            return path[2:]
+        return path
+
+    @staticmethod
+    def _unescape(text: str) -> str:
+        raw = bytearray()
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if char != "\\" or index + 1 >= len(text):
+                raw.extend(char.encode("utf-8"))
+                index += 1
+                continue
+            nxt = text[index + 1]
+            mapped = GitPath._SIMPLE.get(nxt)
+            if mapped is not None:
+                raw.extend(mapped.encode("latin-1"))
+                index += 2
+                continue
+            octal = text[index + 1:index + 4]
+            if len(octal) == 3 and all(item in "01234567" for item in octal):
+                raw.append(int(octal, 8))
+                index += 4
+                continue
+            raw.extend(nxt.encode("utf-8"))
+            index += 2
+        return raw.decode("utf-8", "surrogateescape")
+
+
+def _binary_section(lines: list[str]) -> bool:
+    for line in lines:
+        if line.startswith("@@"):
+            return False
+        if line.startswith("Binary files ") or line.startswith("GIT binary patch"):
+            return True
+    return False
+
+
 def _parse_section(section: str) -> tuple[DiffEntry, ...]:
     lines = section.splitlines()
     old_hint, path = _git_pair(lines[0])
-    if any("Binary files" in line or "GIT binary patch" in line for line in lines):
+    if _binary_section(lines):
         return (BinaryHunk(path),)
     old_path = path
+    rename_from = ""
+    rename_to = ""
     for line in lines:
-        if line.startswith("--- "):
+        if line.startswith("@@"):
+            break
+        if line.startswith("rename from "):
+            rename_from = GitPath.decode(line[len("rename from "):])
+        elif line.startswith("rename to "):
+            rename_to = GitPath.decode(line[len("rename to "):])
+        elif line.startswith("--- "):
             old_path = _header_path(line)
         elif line.startswith("+++ "):
             path = _header_path(line)
+    if rename_from:
+        old_path = rename_from
+    if rename_to:
+        path = rename_to
     if old_path == "/dev/null":
         return (NewFile(old_hint if path == "/dev/null" else path),)
     if path == "/dev/null":
         path = old_path
+    blame = "" if old_path == path else old_path
     hunks: list[TextHunk] = []
     index = 0
     while index < len(lines):
@@ -134,7 +207,7 @@ def _parse_section(section: str) -> tuple[DiffEntry, ...]:
             else:
                 break
             index += 1
-        hunks.append(TextHunk(path, old_start, new_start, tuple(body)))
+        hunks.append(TextHunk(path, old_start, new_start, tuple(body), blame))
     return tuple(hunks)
 
 
@@ -143,10 +216,10 @@ def _git_pair(header: str) -> tuple[str, str]:
     if rest.startswith('"'):
         left, rest = _unquote(rest)
         right, _rest = _unquote(rest.lstrip())
-    else:
-        mark = rest.find(" b/")
-        left, right = (rest, rest) if mark == -1 else (rest[:mark], rest[mark + 1:])
-    return _strip_ab(left), _strip_ab(right)
+        return GitPath.decode(f'"{left}"'), GitPath.decode(f'"{right}"')
+    mark = rest.find(" b/")
+    left, right = (rest, rest) if mark == -1 else (rest[:mark], rest[mark + 1:])
+    return GitPath.decode(left), GitPath.decode(right)
 
 
 def _unquote(text: str) -> tuple[str, str]:
@@ -161,17 +234,9 @@ def _unquote(text: str) -> tuple[str, str]:
     return text, ""
 
 
-def _strip_ab(path: str) -> str:
-    if path.startswith("a/") or path.startswith("b/"):
-        return path[2:]
-    return path
-
-
 def _header_path(line: str) -> str:
     rest = line[4:].split("\t", 1)[0].strip()
-    if len(rest) >= 2 and rest[0] == '"' and rest[-1] == '"':
-        rest = rest[1:-1]
-    return _strip_ab(rest)
+    return GitPath.decode(rest)
 
 
 def parse_blame(porcelain: str) -> dict[int, int]:
@@ -378,10 +443,10 @@ def select_decisions(
     for entry in entries:
         if not isinstance(entry, TextHunk) or _ignored(entry.path):
             continue
-        if not _old_enough(entry, blame_of(entry.path), min_age, now):
+        if not _old_enough(entry, blame_of(entry.blame_path()), min_age, now):
             continue
         removed = any(line.kind is Kind.REMOVED for line in entry.lines)
-        age = _hunk_age(entry, blame_of(entry.path), now) if removed else None
+        age = _hunk_age(entry, blame_of(entry.blame_path()), now) if removed else None
         key = _change_key(source, entry)
         if key in seen:
             continue
@@ -777,7 +842,7 @@ def _keep_saved_why(
     for entry in entries:
         if not isinstance(entry, TextHunk) or _ignored(entry.path):
             continue
-        if not _old_enough(entry, blame_of(entry.path), min_age, now):
+        if not _old_enough(entry, blame_of(entry.blame_path()), min_age, now):
             continue
         key = _change_key("commit", entry)
         exact = [item for item in saved if item.change == key and item.folder not in claimed]
@@ -880,7 +945,7 @@ def run(start: Path, source: str, now: datetime | None = None, any_age: bool = F
 
 def _diff(start: Path, *revs: str) -> str:
     return _git(
-        start, "diff", f"-U{CONTEXT_LINES}", "--no-renames", "--no-ext-diff",
+        start, "diff", f"-U{CONTEXT_LINES}", "--find-renames", "--no-ext-diff",
         "--ignore-cr-at-eol", *revs,
     )
 

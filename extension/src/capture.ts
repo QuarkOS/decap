@@ -1,9 +1,10 @@
 import { execFileSync } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { renderPng } from "./render";
 import { Note, noteKey, parseNote, retargetNote } from "./note";
-import { Decision, DEFAULT_MIN_AGE_MS, bodyKey, changeKey, ignored, noteLines, oldEnough, parseBlame, parseDiff, selectDecisions } from "./rules";
+import { Decision, DEFAULT_MIN_AGE_MS, GitPath, LineRange, blamePath, bodyKey, changeKey, ignored, noteLines, oldEnough, parseBlame, parseDiff, selectDecisions } from "./rules";
 
 const FRESH_COMMIT_SECONDS = 180;
 
@@ -21,9 +22,21 @@ export function setGitPath(value: string | undefined) {
   }
 }
 
+export function runGit(root: string, args: string[]): GitResult {
+  return git(root, args);
+}
+
 function git(root: string, args: string[]): GitResult {
+  let cwd = root;
   try {
-    const stdout = execFileSync(gitPath, ["-c", "color.ui=never", "-C", root, ...args], {
+    if (fs.statSync(root).isFile()) {
+      cwd = path.dirname(root);
+    }
+  } catch {
+    cwd = root;
+  }
+  try {
+    const stdout = execFileSync(gitPath, ["-c", "color.ui=never", "-C", cwd, ...args], {
       encoding: "utf8",
       maxBuffer: 20 * 1024 * 1024,
       windowsHide: true,
@@ -77,7 +90,7 @@ export function commitDescendsFrom(root: string, ancestor: string, commit: strin
 }
 
 export function commitsSince(root: string, ancestor: string, commit: string): string[] {
-  const result = git(root, ["rev-list", "--reverse", `${ancestor}..${commit}`]);
+  const result = git(root, ["rev-list", "--first-parent", "--reverse", `${ancestor}..${commit}`]);
   if (result.code !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim() || "git command failed";
     throw new Error(detail);
@@ -156,7 +169,7 @@ function minAgeMs(root: string): number {
 
 function diff(root: string, revs: string[]): string {
   return gitText(root, [
-    "diff", "-U3", "--no-renames", "--no-ext-diff", "--ignore-cr-at-eol", ...revs,
+    "diff", "-U3", "--find-renames", "--no-ext-diff", "--ignore-cr-at-eol", ...revs,
   ]);
 }
 
@@ -267,7 +280,7 @@ function keepSavedWhy(input: {
     if (entry.type !== "hunk" || ignored(entry.hunk.path)) {
       continue;
     }
-    if (!oldEnough(entry.hunk, input.blameOf(entry.hunk.path), input.minAgeMs, input.now)) {
+    if (!oldEnough(entry.hunk, input.blameOf(blamePath(entry.hunk)), input.minAgeMs, input.now)) {
       continue;
     }
     const key = changeKey("commit", entry.hunk);
@@ -399,11 +412,310 @@ export interface CaptureResult {
   existing?: string[];
 }
 
+export class RepoPath {
+  static relative(root: string, file: string): string | undefined {
+    const win32 = process.platform === "win32";
+    return RepoPath.compare(root, file, win32)
+      ?? RepoPath.compareReal(root, file, win32)
+      ?? RepoPath.compareMapped(root, file, win32)
+      ?? RepoPath.fromGit(root, file);
+  }
+
+  static compare(root: string, file: string, win32: boolean): string | undefined {
+    const base = RepoPath.normalize(root, win32);
+    const target = RepoPath.normalize(file, win32);
+    const posix = win32 ? path.win32 : path;
+    const rel = posix.relative(base, target);
+    const slash = rel.split(/[\\/]/).join("/");
+    if (slash === "" || slash.split("/").includes("..") || posix.isAbsolute(rel)) {
+      return undefined;
+    }
+    return slash;
+  }
+
+  static normalize(input: string, win32: boolean): string {
+    let text = input.replace(/^\uFEFF/, "").replace(/^\s+/, "").replace(/[\r\n]+$/, "").replace(/\\/g, "/");
+    const lowered = text.toLowerCase();
+    if (lowered.startsWith("//?/unc/")) {
+      text = "//" + text.slice("//?/unc/".length);
+    } else if (lowered.startsWith("//?/")) {
+      text = text.slice("//?/".length);
+    }
+    if (win32) {
+      const msys = /^\/([a-zA-Z])\/(.*)$/.exec(text);
+      if (msys) {
+        text = `${msys[1]}:/${msys[2]}`;
+      }
+      text = text.toLowerCase();
+    }
+    return (win32 ? path.win32 : path).resolve(text);
+  }
+
+  static mapDrive(gitRoot: string, localPath: string, networkRoot: string): string | undefined {
+    const gitNorm = RepoPath.normalize(gitRoot, true);
+    const network = RepoPath.normalize(networkRoot, true).replace(/\\+$/, "");
+    const local = RepoPath.normalize(localPath, true);
+    const drive = /^([a-z]):/.exec(local);
+    if (!drive) {
+      return undefined;
+    }
+    const gitKey = gitNorm.toLowerCase();
+    const networkKey = network.toLowerCase();
+    if (gitKey !== networkKey && !gitKey.startsWith(`${networkKey}\\`)) {
+      return undefined;
+    }
+    let suffix = gitNorm.slice(network.length);
+    if (suffix !== "" && !suffix.startsWith("\\")) {
+      suffix = `\\${suffix}`;
+    }
+    if (suffix === "") {
+      suffix = "\\";
+    }
+    return path.win32.normalize(`${drive[1]}:${suffix}`);
+  }
+
+  private static compareReal(root: string, file: string, win32: boolean): string | undefined {
+    const base = RepoPath.real(root);
+    const target = RepoPath.real(file);
+    if (!base || !target) {
+      return undefined;
+    }
+    return RepoPath.compare(base, target, win32);
+  }
+
+  private static compareMapped(root: string, file: string, win32: boolean): string | undefined {
+    if (!win32) {
+      return undefined;
+    }
+    const fileDrive = RepoPath.driveLetter(file);
+    const rootDrive = RepoPath.driveLetter(root);
+    const letter = fileDrive ?? rootDrive;
+    if (!letter) {
+      return undefined;
+    }
+    const network = RepoPath.driveNetwork(letter);
+    if (!network) {
+      return undefined;
+    }
+    if (fileDrive) {
+      const mapped = RepoPath.mapDrive(root, file, network);
+      return mapped ? RepoPath.compare(mapped, file, true) : undefined;
+    }
+    const mappedFile = RepoPath.mapDrive(file, root, network);
+    return mappedFile ? RepoPath.compare(root, mappedFile, true) : undefined;
+  }
+
+  private static driveLetter(input: string): string | undefined {
+    return /^([a-z]):/.exec(RepoPath.normalize(input, true))?.[1];
+  }
+
+  private static driveNetwork(letter: string): string | undefined {
+    try {
+      const resolved = fs.realpathSync.native(`${letter}:\\`);
+      const found = RepoPath.normalize(resolved, true).replace(/\\+$/, "");
+      const plain = RepoPath.normalize(`${letter}:\\`, true).replace(/\\+$/, "");
+      if (found.toLowerCase() === plain.toLowerCase()) {
+        return undefined;
+      }
+      return resolved;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private static real(input: string): string | undefined {
+    try {
+      return fs.realpathSync(path.resolve(input));
+    } catch {
+      return undefined;
+    }
+  }
+
+  // Git and the editor can name one folder with different spellings.
+  private static fromGit(root: string, file: string): string | undefined {
+    const placed = RepoPath.placement(file);
+    if (!placed || !RepoPath.sameRepo(root, placed.top)) {
+      return undefined;
+    }
+    return placed.rel;
+  }
+
+  private static placement(file: string): { top: string; rel: string } | undefined {
+    const dir = RepoPath.cwdOf(file);
+    if (!dir) {
+      return undefined;
+    }
+    const top = RepoPath.gitOut(dir, ["rev-parse", "--show-toplevel"]);
+    const prefixOut = RepoPath.gitOut(dir, ["rev-parse", "--show-prefix"]);
+    if (!top || prefixOut === undefined) {
+      return undefined;
+    }
+    let prefix = prefixOut.replace(/\\/g, "/");
+    if (prefix === "." || prefix === "./") {
+      prefix = "";
+    }
+    if (prefix !== "" && !prefix.endsWith("/")) {
+      prefix = `${prefix}/`;
+    }
+    const base = RepoPath.cwdOf(file) === file ? "" : path.basename(file);
+    const rel = `${prefix}${base}`.replace(/\/$/, "");
+    if (rel === "" || rel.split("/").includes("..")) {
+      return undefined;
+    }
+    return { top, rel };
+  }
+
+  private static sameRepo(root: string, fileTop: string): boolean {
+    const win32 = process.platform === "win32";
+    if (RepoPath.samePlace(root, fileTop, win32)) {
+      return true;
+    }
+    const cwd = RepoPath.cwdOf(root);
+    if (!cwd) {
+      return false;
+    }
+    const rootTop = RepoPath.gitOut(cwd, ["rev-parse", "--show-toplevel"]);
+    return !!rootTop && RepoPath.samePlace(rootTop, fileTop, win32);
+  }
+
+  private static samePlace(left: string, right: string, win32: boolean): boolean {
+    if (RepoPath.normalize(left, win32) === RepoPath.normalize(right, win32)) {
+      return true;
+    }
+    const a = RepoPath.real(left);
+    const b = RepoPath.real(right);
+    return !!a && !!b && RepoPath.normalize(a, win32) === RepoPath.normalize(b, win32);
+  }
+
+  private static cwdOf(input: string): string | undefined {
+    try {
+      return fs.statSync(input).isFile() ? path.dirname(input) : input;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private static gitOut(cwd: string, args: string[]): string | undefined {
+    const result = git(cwd, args);
+    if (result.code !== 0) {
+      return undefined;
+    }
+    return result.stdout.replace(/^\uFEFF/, "").replace(/^\s+/, "").replace(/[\r\n]+$/, "");
+  }
+}
+
+export interface DirtyBuffer {
+  file: string;
+  text: string;
+}
+
+export class WorktreeBuffer {
+  static overlay(root: string, diffText: string, buffers: DirtyBuffer[]): string {
+    if (buffers.length === 0) {
+      return diffText;
+    }
+    const sections = WorktreeBuffer.sections(diffText);
+    for (const buffer of buffers) {
+      const rel = WorktreeBuffer.repoPath(root, buffer.file);
+      if (!rel) {
+        continue;
+      }
+      const kept = sections.filter((section) => WorktreeBuffer.sectionPath(section) !== rel);
+      sections.length = 0;
+      sections.push(...kept);
+      const head = git(root, ["show", `HEAD:${rel}`]);
+      if (head.code !== 0) {
+        continue;
+      }
+      const synthetic = WorktreeBuffer.noIndex(head.stdout, buffer.text, rel);
+      if (synthetic) {
+        sections.push(synthetic);
+      }
+    }
+    return sections.join("");
+  }
+
+  private static sections(diffText: string): string[] {
+    const text = diffText.replace(/\r\n/g, "\n");
+    if (!text.includes("diff --git ")) {
+      return text.trim() === "" ? [] : [text];
+    }
+    return text.split(/(?=^diff --git )/m).filter((section) => section.startsWith("diff --git "));
+  }
+
+  private static sectionPath(section: string): string {
+    const parsed = parseDiff(section);
+    for (const entry of parsed) {
+      if (entry.type === "hunk") {
+        return entry.hunk.path;
+      }
+    }
+    const header = section.split("\n")[0] || "";
+    const rest = header.slice("diff --git ".length).trim();
+    const mark = rest.indexOf(" b/");
+    return mark === -1 ? GitPath.decode(rest) : GitPath.decode(rest.slice(mark + 1));
+  }
+
+  private static repoPath(root: string, file: string): string | undefined {
+    return RepoPath.relative(root, file);
+  }
+
+  private static noIndex(before: string, after: string, rel: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "decap-buf-"));
+    const left = path.join(dir, "before");
+    const right = path.join(dir, "after");
+    fs.writeFileSync(left, before);
+    fs.writeFileSync(right, after);
+    try {
+      const result = git(dir, ["diff", "--no-index", "--no-ext-diff", "--ignore-cr-at-eol", "-U3", "--", left, right]);
+      if ((result.code !== 0 && result.code !== 1) || result.stdout.trim() === "") {
+        return "";
+      }
+      return WorktreeBuffer.rewrite(result.stdout, rel);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  private static rewrite(diffText: string, rel: string): string {
+    const quoted = /[^\u0020-\u007e]/.test(rel) || /[\s"\\]/.test(rel);
+    const token = (prefix: string) => quoted ? `"${prefix}/${WorktreeBuffer.escape(rel)}"` : `${prefix}/${rel}`;
+    return diffText.replace(/\r\n/g, "\n").split("\n").map((line) => {
+      if (line.startsWith("diff --git ")) {
+        return `diff --git ${token("a")} ${token("b")}`;
+      }
+      if (line.startsWith("--- ")) {
+        return `--- ${token("a")}`;
+      }
+      if (line.startsWith("+++ ")) {
+        return `+++ ${token("b")}`;
+      }
+      return line;
+    }).join("\n");
+  }
+
+  private static escape(rel: string): string {
+    let out = "";
+    const bytes = Buffer.from(rel, "utf8");
+    for (const byte of bytes) {
+      if (byte === 92 || byte === 34) {
+        out += `\\${String.fromCharCode(byte)}`;
+      } else if (byte < 32 || byte >= 127) {
+        out += `\\${byte.toString(8).padStart(3, "0")}`;
+      } else {
+        out += String.fromCharCode(byte);
+      }
+    }
+    return out;
+  }
+}
+
 export async function capture(input: {
   start: string;
   source: "commit" | "worktree";
   fontFile: string;
   now?: Date;
+  buffers?: DirtyBuffer[];
 }): Promise<string[]> {
   return (await captureDetailed(input)).written;
 }
@@ -415,6 +727,9 @@ export async function captureDetailed(input: {
   now?: Date;
   anyAge?: boolean;
   rev?: string;
+  buffers?: DirtyBuffer[];
+  diffText?: string;
+  only?: { path: string; start: number; end: number };
 }): Promise<CaptureResult> {
   const now = input.now ?? new Date();
   const root = toplevel(input.start);
@@ -442,7 +757,17 @@ export async function captureDetailed(input: {
   }
   const blameRev = input.source === "commit" ? `${input.rev ?? "HEAD"}^` : "HEAD";
   const cache = new Map<string, Map<number, number>>();
-  const entries = parseDiff(diff(root, revs));
+  let diffText = input.diffText ?? diff(root, revs);
+  if (input.source === "worktree" && input.buffers && input.buffers.length > 0) {
+    diffText = WorktreeBuffer.overlay(root, diffText, input.buffers);
+  }
+  let entries = parseDiff(diffText);
+  if (input.only) {
+    const only = input.only;
+    entries = entries.filter((entry) => {
+      return entry.type === "hunk" && entry.hunk.path === only.path && LineRange.overlaps(entry.hunk, only.start, only.end);
+    });
+  }
   const blameOf = (filePath: string) => {
       const cached = cache.get(filePath);
       if (cached) {
